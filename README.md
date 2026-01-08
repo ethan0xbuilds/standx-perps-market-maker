@@ -33,7 +33,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，填入私钥和参数
 
-# 运行（默认 2 秒监控，600 秒测试）
+# 运行（默认 2 秒监控，无限运行）
 python market_maker.py
 ```
 
@@ -47,13 +47,21 @@ LIMIT_ORDER_TOLERANCE_BPS=0.5   # 目标范围 7.0-8.0 bps
 MAX_ORDER_BPS=10                # 硬阈值，超过必须重挂
 ```
 
-## 长时运行（示例）
-当前 `main()` 默认运行 600 秒。若要跑 24h，有两种方式：
-1) 外层循环守护：
+## 运行模式配置
+默认无限运行。若需设置有限时长（如测试10分钟或跑24小时），可修改 [market_maker.py](market_maker.py#L403) 的 `main()` 调用：
+```python
+# 示例：运行10分钟
+market_maker.run(check_interval=2, duration=600)
+
+# 示例：运行24小时
+market_maker.run(check_interval=2, duration=86400)
+```
+
+### 可选：崩溃自动重启
+使用外层循环守护，程序崩溃后自动重启：
 ```bash
 while true; do python market_maker.py; sleep 2; done
 ```
-2) 修改 `main()` 调用，把 `duration` 改为 `86400` 或 `None`（无限运行），再运行脚本。
 
 ### 后台运行示例
 ```bash

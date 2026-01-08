@@ -399,8 +399,8 @@ def main():
         max_bps=max_bps,
     )
     
-    # 运行策略（2秒监控间隔，10分钟测试）
-    market_maker.run(check_interval=2, duration=600)
+    # 运行策略（2秒监控间隔，默认无限运行）
+    market_maker.run(check_interval=2)
 
 
 if __name__ == "__main__":
