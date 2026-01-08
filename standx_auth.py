@@ -383,6 +383,36 @@ class StandXAuth:
             raw_body=payload_str,
         )
 
+    def cancel_order(self, order_id: int = None, cl_ord_id: str = None) -> dict:
+        """
+        Cancel an existing order (requires body signature).
+        
+        Args:
+            order_id: Order ID to cancel (at least one of order_id or cl_ord_id required)
+            cl_ord_id: Client order ID to cancel
+            
+        Returns:
+            Response with code, message, and request_id
+        """
+        if order_id is None and cl_ord_id is None:
+            raise ValueError("At least one of order_id or cl_ord_id is required")
+        
+        payload = {}
+        if order_id is not None:
+            payload["order_id"] = order_id
+        if cl_ord_id is not None:
+            payload["cl_ord_id"] = cl_ord_id
+        
+        payload_str = json.dumps(payload, separators=(",", ":"))
+        headers_extra = self._body_signature_headers(payload_str)
+        return self.make_api_call(
+            "/api/cancel_order",
+            method="POST",
+            data=payload,
+            headers_extra=headers_extra,
+            raw_body=payload_str,
+        )
+
     def query_order(self, order_id: int = None, cl_ord_id: str = None) -> dict:
         """Query order status by order_id or cl_ord_id (at least one required)."""
         params = {}
