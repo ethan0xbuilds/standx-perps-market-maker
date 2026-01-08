@@ -5,6 +5,9 @@ Implements wallet-based signature authentication with Ed25519 and Ethereum signi
 
 import os
 import json
+import base64
+import time
+import uuid
 import requests
 import jwt
 from dotenv import load_dotenv
@@ -240,7 +243,7 @@ class StandXAuth:
         """Get current access token for API calls"""
         return self.token
     
-    def make_api_call(self, endpoint: str, method: str = "GET", data: dict = None, params: dict = None) -> dict:
+    def make_api_call(self, endpoint: str, method: str = "GET", data: dict = None, params: dict = None, headers_extra: dict = None, raw_body: str = None) -> dict:
         """
         Make authenticated API call to StandX
         
@@ -262,13 +265,22 @@ class StandXAuth:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json"
         }
+        if headers_extra:
+            headers.update(headers_extra)
         
         try:
             method_up = method.upper()
             if method_up == "GET":
                 response = requests.get(url, headers=headers, params=params, timeout=10)
             elif method_up == "POST":
-                response = requests.post(url, json=data, headers=headers, timeout=10)
+                if raw_body is not None:
+                    response = requests.post(
+                        url, data=raw_body, headers=headers, params=params, timeout=10
+                    )
+                else:
+                    response = requests.post(
+                        url, json=data, headers=headers, params=params, timeout=10
+                    )
             else:
                 raise ValueError(f"Unsupported method: {method}")
             
@@ -280,6 +292,20 @@ class StandXAuth:
             body = getattr(e.response, "text", None) if hasattr(e, "response") and e.response is not None else None
             detail = f" status={status} url={url} body={body}" if status else f" url={url}"
             raise Exception(f"API call failed: {str(e)}{detail}")
+
+    def _body_signature_headers(self, payload_str: str) -> dict:
+        """Build body signature headers (ed25519, base64)."""
+        x_request_id = str(uuid.uuid4())
+        x_request_timestamp = str(int(time.time() * 1000))  # milliseconds
+        message = f"v1,{x_request_id},{x_request_timestamp},{payload_str}"
+        signature_bytes = self.ed25519_signing_key.sign(message.encode("utf-8")).signature
+        signature_b64 = base64.b64encode(signature_bytes).decode()
+        return {
+            "x-request-sign-version": "v1",
+            "x-request-id": x_request_id,
+            "x-request-timestamp": x_request_timestamp,
+            "x-request-signature": signature_b64,
+        }
 
     def query_balance(self) -> dict:
         """Query unified user balance snapshot"""
@@ -315,6 +341,35 @@ class StandXAuth:
         # API returns a list directly
         return result if isinstance(result, list) else []
 
+    def new_limit_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        price: str,
+        time_in_force: str = "gtc",
+        reduce_only: bool = False,
+    ) -> dict:
+        """Place a signed limit order (requires body signature)."""
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "order_type": "limit",
+            "qty": qty,
+            "price": price,
+            "time_in_force": time_in_force,
+            "reduce_only": reduce_only,
+        }
+        payload_str = json.dumps(payload, separators=(",", ":"))
+        headers_extra = self._body_signature_headers(payload_str)
+        return self.make_api_call(
+            "/api/new_order",
+            method="POST",
+            data=payload,
+            headers_extra=headers_extra,
+            raw_body=payload_str,
+        )
+
 
 def main():
     """Example usage of StandX authentication"""
@@ -339,8 +394,9 @@ def main():
     print(json.dumps(auth_response, indent=2))
 
     # Public sanity check: query symbol price
-    price = auth.query_symbol_price("BTC-USD")
-    print("\nPublic Price (BTC-USD):")
+    symbol = os.getenv("LIMIT_ORDER_SYMBOL", "BTC-USD")
+    price = auth.query_symbol_price(symbol)
+    print(f"\nPublic Price ({symbol}):")
     print(json.dumps(price, indent=2))
 
     # Query and print user balance (graceful on empty account)
@@ -361,6 +417,41 @@ def main():
             print("  无持仓")
     except Exception as e:
         print(f"\n❌ 查询持仓失败: {e}")
+
+    # Place a demo limit order using env-configured bps/qty/side
+    try:
+        bps = int(os.getenv("LIMIT_ORDER_BPS", "50"))
+        side = os.getenv("LIMIT_ORDER_SIDE", "buy").lower()
+        qty = float(os.getenv("LIMIT_ORDER_QTY", "0.00001"))
+
+        mid_price = price.get("mid_price")
+        mark_price = price.get("mark_price")
+        last_price = price.get("last_price")
+        base_price = mid_price or mark_price or last_price
+        if base_price is None:
+            raise ValueError("No price fields found in symbol price snapshot.")
+
+        base_price_f = float(base_price)
+        if side not in {"buy", "sell"}:
+            raise ValueError("LIMIT_ORDER_SIDE must be 'buy' or 'sell'")
+        sign = -1 if side == "buy" else 1
+        limit_price = base_price_f * (1 + sign * (bps / 10000))
+        if limit_price <= 0:
+            raise ValueError("Computed limit price is non-positive")
+        limit_price_str = f"{limit_price:.2f}"
+
+        order_resp = auth.new_limit_order(
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            price=limit_price_str,
+            time_in_force="gtc",
+            reduce_only=False,
+        )
+        print(f"\nPlaced {side} limit order @ {limit_price_str} ({bps} bps adj)")
+        print(json.dumps(order_resp, indent=2))
+    except Exception as e:
+        print(f"\n❌ 下单失败: {e}")
 
 
 if __name__ == "__main__":
