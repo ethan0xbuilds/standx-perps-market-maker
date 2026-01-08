@@ -63,9 +63,28 @@ market_maker.run(check_interval=2, duration=86400)
 while true; do python market_maker.py; sleep 2; done
 ```
 
-### 后台运行示例
+### Ubuntu 生产环境部署（推荐）
 ```bash
-nohup python market_maker.py > run.log 2>&1 &
+# 1. 启动（后台运行 + 日志输出）
+chmod +x run.sh stop.sh
+./run.sh
+
+# 2. 监控日志
+tail -f logs/market_maker.log
+
+# 3. 停止
+./stop.sh
+```
+
+**启动脚本特性**：
+- 自动检测虚拟环境和配置文件
+- 防止重复启动
+- 日志实时写入 `logs/market_maker.log`
+- PID 管理，方便停止
+
+### 手动后台运行
+```bash
+nohup python -u market_maker.py >> run.log 2>&1 &
 # 观察日志
 tail -f run.log
 ```
