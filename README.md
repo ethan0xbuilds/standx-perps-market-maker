@@ -1,6 +1,10 @@
 # StandX Perps Market Maker
 
-双向限价单做市策略，基于 StandX Perps (BSC)。默认挂 7.5 bps 买卖双向单，软阈值 7.0-8.0 bps，硬阈值 10 bps，偏离或成交后自动补单。
+![License](https://img.shields.io/badge/license-MIT-green)
+![Python](https://img.shields.io/badge/python-3.11-blue)
+![Status](https://img.shields.io/badge/status-alpha-orange)
+
+简述：基于 StandX Perps (BSC) 的双向限价做市脚本，默认挂 7.5 bps 买卖双向单；软阈值 7.0–8.0 bps，硬阈值 10 bps；偏离或成交后自动补单并维持双边挂单。
 
 ## 功能概览
 - 认证与签名：EIP-191 + Ed25519 体签 ([standx_auth.py](standx_auth.py))，带 30s HTTP 超时与网络重试。
