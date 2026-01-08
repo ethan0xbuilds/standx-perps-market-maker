@@ -16,6 +16,7 @@ from nacl.signing import SigningKey
 # API endpoints
 PREPARE_SIGNIN_URL = "https://api.standx.com/v1/offchain/prepare-signin"
 LOGIN_URL = "https://api.standx.com/v1/offchain/login"
+PERPS_BASE_URL = "https://perps.standx.com"
 CHAIN = "bsc"
 
 # Load environment variables
@@ -239,7 +240,7 @@ class StandXAuth:
         """Get current access token for API calls"""
         return self.token
     
-    def make_api_call(self, endpoint: str, method: str = "GET", data: dict = None) -> dict:
+    def make_api_call(self, endpoint: str, method: str = "GET", data: dict = None, params: dict = None) -> dict:
         """
         Make authenticated API call to StandX
         
@@ -253,17 +254,20 @@ class StandXAuth:
         """
         if not self.token:
             raise Exception("Not authenticated. Call authenticate() first.")
-        
-        url = f"https://api.standx.com{endpoint}"
+
+        # Normalize endpoint to avoid trailing-slash 404s
+        normalized_endpoint = endpoint.rstrip("/") if endpoint else ""
+        url = f"{PERPS_BASE_URL}{normalized_endpoint}"
         headers = {
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json"
         }
         
         try:
-            if method.upper() == "GET":
-                response = requests.get(url, headers=headers, timeout=10)
-            elif method.upper() == "POST":
+            method_up = method.upper()
+            if method_up == "GET":
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+            elif method_up == "POST":
                 response = requests.post(url, json=data, headers=headers, timeout=10)
             else:
                 raise ValueError(f"Unsupported method: {method}")
@@ -272,7 +276,37 @@ class StandXAuth:
             return response.json()
             
         except requests.exceptions.RequestException as e:
-            raise Exception(f"API call failed: {str(e)}")
+            status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
+            body = getattr(e.response, "text", None) if hasattr(e, "response") and e.response is not None else None
+            detail = f" status={status} url={url} body={body}" if status else f" url={url}"
+            raise Exception(f"API call failed: {str(e)}{detail}")
+
+    def query_balance(self) -> dict:
+        """Query unified user balance snapshot"""
+        try:
+            return self.make_api_call("/api/query_balance")
+        except Exception as e:
+            msg = str(e)
+            if "status=404" in msg and "user balance not found" in msg:
+                print("\n⚠️ 未找到账户余额记录，返回零值快照（可能尚未入金/转入保证金）。")
+                return {
+                    "isolated_balance": "0",
+                    "isolated_upnl": "0",
+                    "cross_balance": "0",
+                    "cross_margin": "0",
+                    "cross_upnl": "0",
+                    "locked": "0",
+                    "cross_available": "0",
+                    "balance": "0",
+                    "upnl": "0",
+                    "equity": "0",
+                    "pnl_freeze": "0",
+                }
+            raise
+
+    def query_symbol_price(self, symbol: str) -> dict:
+        """Public: Query symbol price snapshot (index/mark/last/mid)"""
+        return self.make_api_call("/api/query_symbol_price", params={"symbol": symbol})
 
 
 def main():
@@ -293,12 +327,22 @@ def main():
     # Authenticate and get token
     auth_response = auth.authenticate()
     
-    # Print response
+    # Print auth response (optional)
     print("\nFull Authentication Response:")
     print(json.dumps(auth_response, indent=2))
-    
-    # Token is now available for making API calls
-    # Example: response = auth.make_api_call("/v1/user/profile")
+
+    # Public sanity check: query symbol price
+    price = auth.query_symbol_price("BTC-USD")
+    print("\nPublic Price (BTC-USD):")
+    print(json.dumps(price, indent=2))
+
+    # Query and print user balance (graceful on empty account)
+    try:
+        balance = auth.query_balance()
+        print("\nUser Balance:")
+        print(json.dumps(balance, indent=2))
+    except Exception as e:
+        print(f"\n❌ 查询余额失败: {e}")
 
 
 if __name__ == "__main__":
