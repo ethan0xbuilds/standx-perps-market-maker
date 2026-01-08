@@ -16,7 +16,7 @@ load_dotenv()
 class MarketMaker:
     """双向限价单做市器"""
     
-    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, max_bps: float = 10):
+    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, tolerance_bps: float = 0.5, max_bps: float = 10):
         """
         初始化做市器
         
@@ -24,14 +24,20 @@ class MarketMaker:
             auth: 认证后的StandXAuth实例
             symbol: 交易对
             qty: 订单数量（字符串格式）
-            target_bps: 目标挂单偏离（basis points，默认7.5保持2.5bps缓冲）
-            max_bps: 最大允许偏离（超过后重新挂单，默认10符合奖励资格）
+            target_bps: 目标挂单偏离（basis points，默认7.5）
+            tolerance_bps: 目标范围容差（默认0.5，即[7.0, 8.0]bps）
+            max_bps: 最大允许偏离硬阈值（超过后必须重新挂，默认10符合奖励资格）
         """
         self.auth = auth
         self.symbol = symbol
         self.qty = qty
         self.target_bps = target_bps
+        self.tolerance_bps = tolerance_bps
         self.max_bps = max_bps
+        
+        # 计算目标范围
+        self.target_lower = target_bps - tolerance_bps
+        self.target_upper = target_bps + tolerance_bps
         
         # 获取持仓配置
         positions = auth.query_positions(symbol=symbol)
@@ -133,7 +139,10 @@ class MarketMaker:
     
     def check_and_adjust_orders(self, market_price: float) -> bool:
         """
-        检查订单是否需要调整（选项B策略：成交后只补单不平仓）
+        检查订单是否需要调整（两层控制策略）
+        
+        - 软阈值[target_lower, target_upper]：在范围内维持订单，不调整
+        - 硬阈值max_bps：超过才必须取消重新挂
         
         Args:
             market_price: 当前市场价格
@@ -152,11 +161,18 @@ class MarketMaker:
             buy_price = float(self.buy_order["price"])
             buy_bps = abs((market_price - buy_price) / market_price * 10000)
             
+            # 两层检查：先看是否超过硬阈值，再看是否超出目标范围
             if buy_bps > self.max_bps:
-                print(f"\n⚠️ 买单偏离过大: {buy_bps:.1f} bps (阈值: {self.max_bps} bps)")
+                print(f"\n🚨 买单偏离HARD LIMIT: {buy_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
                 print(f"   订单价格: {buy_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.buy_order)
                 adjusted = True
+            elif buy_bps < self.target_lower or buy_bps > self.target_upper:
+                print(f"\n⚠️ 买单偏离目标范围: {buy_bps:.1f} bps 不在 [{self.target_lower}, {self.target_upper}] bps")
+                print(f"   订单价格: {buy_price:.2f}, 市价: {market_price:.2f}")
+                orders_to_cancel.append(self.buy_order)
+                adjusted = True
+            # else: 在目标范围内或在缓冲区，维持订单
         else:
             # 买单缺失（可能成交了），需要补单
             print(f"\n💰 买单缺失（可能已成交），准备补单...")
@@ -168,18 +184,25 @@ class MarketMaker:
             sell_price = float(self.sell_order["price"])
             sell_bps = abs((sell_price - market_price) / market_price * 10000)
             
+            # 两层检查：先看是否超过硬阈值，再看是否超出目标范围
             if sell_bps > self.max_bps:
-                print(f"\n⚠️ 卖单偏离过大: {sell_bps:.1f} bps (阈值: {self.max_bps} bps)")
+                print(f"\n🚨 卖单偏离HARD LIMIT: {sell_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
                 print(f"   订单价格: {sell_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.sell_order)
                 adjusted = True
+            elif sell_bps < self.target_lower or sell_bps > self.target_upper:
+                print(f"\n⚠️ 卖单偏离目标范围: {sell_bps:.1f} bps 不在 [{self.target_lower}, {self.target_upper}] bps")
+                print(f"   订单价格: {sell_price:.2f}, 市价: {market_price:.2f}")
+                orders_to_cancel.append(self.sell_order)
+                adjusted = True
+            # else: 在目标范围内或在缓冲区，维持订单
         else:
             # 卖单缺失（可能成交了），需要补单
             print(f"\n💰 卖单缺失（可能已成交），准备补单...")
             missing_sides.append("sell")
             adjusted = True
         
-        # 取消偏离过大的订单
+        # 取消偏离的订单
         if orders_to_cancel:
             print(f"\n🗑️ 取消 {len(orders_to_cancel)} 个订单...")
             for order in orders_to_cancel:
@@ -258,7 +281,8 @@ class MarketMaker:
         print(f"交易对: {self.symbol}")
         print(f"订单数量: {self.qty}")
         print(f"目标偏离: {self.target_bps} bps")
-        print(f"最大偏离: {self.max_bps} bps")
+        print(f"目标范围: [{self.target_lower}, {self.target_upper}] bps (±{self.tolerance_bps} bps)")
+        print(f"硬阈值: {self.max_bps} bps (超过必须重新挂)")
         print(f"检查间隔: {check_interval}秒")
         print(f"运行时长: {duration}秒" if duration else "运行时长: 无限")
         print("=" * 60)
@@ -356,7 +380,8 @@ def main():
     symbol = os.getenv("LIMIT_ORDER_SYMBOL", "BTC-USD")
     qty = os.getenv("LIMIT_ORDER_QTY", "0.004")
     target_bps = float(os.getenv("LIMIT_ORDER_BPS", "7.5"))
-    max_bps = float(os.getenv("MAX_ORDER_BPS", "10"))
+    tolerance_bps = float(os.getenv("LIMIT_ORDER_TOLERANCE_BPS", "0.5"))  # ±0.5bps容差
+    max_bps = float(os.getenv("MAX_ORDER_BPS", "10"))  # 硬阈值
     
     # 认证
     print("🔐 认证中...")
@@ -370,6 +395,7 @@ def main():
         symbol=symbol,
         qty=qty,
         target_bps=target_bps,
+        tolerance_bps=tolerance_bps,
         max_bps=max_bps,
     )
     
