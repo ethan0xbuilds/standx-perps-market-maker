@@ -20,7 +20,7 @@
 ## 安装与运行
 ```bash
 # 克隆代码
-git clone <your-repo-url> && cd standx
+git clone https://github.com/ethan0xbuilds/standx-perps-market-maker.git && cd standx-perps-market-maker
 
 # 创建并激活虚拟环境
 python3.11 -m venv .venv
