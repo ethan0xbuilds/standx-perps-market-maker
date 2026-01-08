@@ -16,7 +16,7 @@ load_dotenv()
 class MarketMaker:
     """双向限价单做市器"""
     
-    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: int = 50, max_bps: int = 70):
+    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, max_bps: float = 10):
         """
         初始化做市器
         
@@ -24,8 +24,8 @@ class MarketMaker:
             auth: 认证后的StandXAuth实例
             symbol: 交易对
             qty: 订单数量（字符串格式）
-            target_bps: 目标挂单偏离（basis points）
-            max_bps: 最大允许偏离（超过后重新挂单）
+            target_bps: 目标挂单偏离（basis points，默认7.5保持2.5bps缓冲）
+            max_bps: 最大允许偏离（超过后重新挂单，默认10符合奖励资格）
         """
         self.auth = auth
         self.symbol = symbol
@@ -44,11 +44,11 @@ class MarketMaker:
         self.sell_order = None
         
     def get_current_price(self) -> float:
-        """获取当前市场价格"""
+        """获取当前市场价格（优先mark_price，因奖励资格基于mark_price计算）"""
         price_data = self.auth.query_symbol_price(self.symbol)
-        mid_price = price_data.get("mid_price")
         mark_price = price_data.get("mark_price")
-        return float(mid_price or mark_price)
+        mid_price = price_data.get("mid_price")
+        return float(mark_price or mid_price)
     
     def calculate_order_prices(self, market_price: float) -> tuple:
         """
@@ -122,7 +122,7 @@ class MarketMaker:
     
     def check_and_adjust_orders(self, market_price: float) -> bool:
         """
-        检查订单是否需要调整
+        检查订单是否需要调整（选项B策略：成交后只补单不平仓）
         
         Args:
             market_price: 当前市场价格
@@ -134,6 +134,7 @@ class MarketMaker:
         
         adjusted = False
         orders_to_cancel = []
+        missing_sides = []
         
         # 检查买单
         if self.buy_order:
@@ -145,6 +146,11 @@ class MarketMaker:
                 print(f"   订单价格: {buy_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.buy_order)
                 adjusted = True
+        else:
+            # 买单缺失（可能成交了），需要补单
+            print(f"\n💰 买单缺失（可能已成交），准备补单...")
+            missing_sides.append("buy")
+            adjusted = True
         
         # 检查卖单
         if self.sell_order:
@@ -156,6 +162,11 @@ class MarketMaker:
                 print(f"   订单价格: {sell_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.sell_order)
                 adjusted = True
+        else:
+            # 卖单缺失（可能成交了），需要补单
+            print(f"\n💰 卖单缺失（可能已成交），准备补单...")
+            missing_sides.append("sell")
+            adjusted = True
         
         # 取消偏离过大的订单
         if orders_to_cancel:
@@ -173,8 +184,54 @@ class MarketMaker:
             # 重新下单
             print(f"\n♻️ 重新挂{self.target_bps}bps限价单...")
             self.place_orders(market_price)
+        elif missing_sides:
+            # 只补缺失的单边（成交后不平仓策略）
+            print(f"\n♻️ 补{', '.join(missing_sides)}单（{self.target_bps}bps）...")
+            self.place_missing_orders(market_price, missing_sides)
         
         return adjusted
+    
+    def place_missing_orders(self, market_price: float, missing_sides: list):
+        """只挂缺失的单边订单"""
+        buy_price, sell_price = self.calculate_order_prices(market_price)
+        
+        # 补买单
+        if "buy" in missing_sides:
+            try:
+                buy_resp = self.auth.new_limit_order(
+                    symbol=self.symbol,
+                    side="buy",
+                    qty=self.qty,
+                    price=f"{buy_price:.2f}",
+                    time_in_force="gtc",
+                    reduce_only=False,
+                    margin_mode=self.margin_mode,
+                    leverage=self.leverage,
+                )
+                print(f"  ✅ 买单: {self.qty} @ {buy_price:.2f} (request_id: {buy_resp.get('request_id')})")
+            except Exception as e:
+                print(f"  ❌ 买单失败: {e}")
+        
+        # 补卖单
+        if "sell" in missing_sides:
+            try:
+                sell_resp = self.auth.new_limit_order(
+                    symbol=self.symbol,
+                    side="sell",
+                    qty=self.qty,
+                    price=f"{sell_price:.2f}",
+                    time_in_force="gtc",
+                    reduce_only=False,
+                    margin_mode=self.margin_mode,
+                    leverage=self.leverage,
+                )
+                print(f"  ✅ 卖单: {self.qty} @ {sell_price:.2f} (request_id: {sell_resp.get('request_id')})")
+            except Exception as e:
+                print(f"  ❌ 卖单失败: {e}")
+        
+        # 等待订单生效
+        time.sleep(3)
+        self.refresh_orders()
     
     def run(self, check_interval: int = 10, duration: int = None):
         """
@@ -275,9 +332,9 @@ def main():
     # 加载配置
     private_key = os.getenv("WALLET_PRIVATE_KEY")
     symbol = os.getenv("LIMIT_ORDER_SYMBOL", "BTC-USD")
-    qty = os.getenv("LIMIT_ORDER_QTY", "0.001")
-    target_bps = int(os.getenv("LIMIT_ORDER_BPS", "50"))
-    max_bps = int(os.getenv("MAX_ORDER_BPS", "70"))
+    qty = os.getenv("LIMIT_ORDER_QTY", "0.004")
+    target_bps = float(os.getenv("LIMIT_ORDER_BPS", "7.5"))
+    max_bps = float(os.getenv("MAX_ORDER_BPS", "10"))
     
     # 认证
     print("🔐 认证中...")
@@ -294,8 +351,8 @@ def main():
         max_bps=max_bps,
     )
     
-    # 运行策略（60秒测试）
-    market_maker.run(check_interval=10, duration=60)
+    # 运行策略（10分钟测试）
+    market_maker.run(check_interval=5, duration=600)
 
 
 if __name__ == "__main__":
