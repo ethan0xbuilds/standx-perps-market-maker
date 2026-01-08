@@ -370,6 +370,37 @@ class StandXAuth:
             raw_body=payload_str,
         )
 
+    def query_order(self, order_id: int = None, cl_ord_id: str = None) -> dict:
+        """Query order status by order_id or cl_ord_id (at least one required)."""
+        params = {}
+        if order_id is not None:
+            params["order_id"] = order_id
+        if cl_ord_id is not None:
+            params["cl_ord_id"] = cl_ord_id
+        if not params:
+            raise ValueError("At least one of order_id or cl_ord_id is required")
+        return self.make_api_call("/api/query_order", params=params)
+
+    def query_open_orders(self, symbol: str = None, limit: int = None) -> dict:
+        """Query all open orders, optionally filtered by symbol."""
+        params = {}
+        if symbol is not None:
+            params["symbol"] = symbol
+        if limit is not None:
+            params["limit"] = limit
+        return self.make_api_call("/api/query_open_orders", params=params)
+
+    def query_orders(self, symbol: str = None, status: str = None, limit: int = None) -> dict:
+        """Query all orders (open/closed), optionally filtered by symbol/status."""
+        params = {}
+        if symbol is not None:
+            params["symbol"] = symbol
+        if status is not None:
+            params["status"] = status
+        if limit is not None:
+            params["limit"] = limit
+        return self.make_api_call("/api/query_orders", params=params)
+
 
 def main():
     """Example usage of StandX authentication"""
@@ -448,10 +479,37 @@ def main():
             time_in_force="gtc",
             reduce_only=False,
         )
+        order_request_id = order_resp.get("request_id")
         print(f"\nPlaced {side} limit order @ {limit_price_str} ({bps} bps adj)")
         print(json.dumps(order_resp, indent=2))
     except Exception as e:
         print(f"\n❌ 下单失败: {e}")
+        order_request_id = None
+
+    # Query order status using client order ID (request_id)
+    if 'order_request_id' in locals() and order_request_id:
+        try:
+            print(f"\n⏳ Waiting 2s for order to be recorded...")
+            time.sleep(2)
+            # Try query_open_orders first
+            print(f"\n1️⃣ Querying open orders for {symbol}...")
+            open_orders = auth.query_open_orders(symbol=symbol)
+            print(f"Open Orders ({symbol}):")
+            if open_orders.get("result"):
+                print(json.dumps(open_orders["result"], indent=2))
+            else:
+                print(f"  (empty, page_size={open_orders.get('page_size')})")
+            
+            # Try query_orders without filters
+            print(f"\n2️⃣ Querying all orders (no filter, last 5)...")
+            all_orders = auth.query_orders(limit=5)
+            print(f"Recent Orders:")
+            if all_orders.get("result"):
+                print(json.dumps(all_orders["result"], indent=2))
+            else:
+                print(f"  (empty, page_size={all_orders.get('page_size')})")
+        except Exception as e:
+            print(f"\n❌ 查询订单失败: {e}")
 
 
 if __name__ == "__main__":
