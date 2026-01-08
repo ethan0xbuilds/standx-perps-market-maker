@@ -76,4 +76,4 @@ tail -f run.log
 - 出错时先看日志中的网络错误与时间同步；必要时重启脚本或重新获取时间。
 
 ## License
-Internal use only.
+MIT License
