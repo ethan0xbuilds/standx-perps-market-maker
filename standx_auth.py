@@ -308,6 +308,13 @@ class StandXAuth:
         """Public: Query symbol price snapshot (index/mark/last/mid)"""
         return self.make_api_call("/api/query_symbol_price", params={"symbol": symbol})
 
+    def query_positions(self, symbol: str = None) -> list:
+        """Query user positions (optionally filtered by symbol)"""
+        params = {"symbol": symbol} if symbol else None
+        result = self.make_api_call("/api/query_positions", params=params)
+        # API returns a list directly
+        return result if isinstance(result, list) else []
+
 
 def main():
     """Example usage of StandX authentication"""
@@ -343,6 +350,17 @@ def main():
         print(json.dumps(balance, indent=2))
     except Exception as e:
         print(f"\n❌ 查询余额失败: {e}")
+
+    # Query and print user positions
+    try:
+        positions = auth.query_positions()
+        print("\nUser Positions:")
+        if positions:
+            print(json.dumps(positions, indent=2))
+        else:
+            print("  无持仓")
+    except Exception as e:
+        print(f"\n❌ 查询持仓失败: {e}")
 
 
 if __name__ == "__main__":
