@@ -345,12 +345,21 @@ class StandXAuth:
         self,
         symbol: str,
         side: str,
-        qty: float,
+        qty: str,
         price: str,
         time_in_force: str = "gtc",
         reduce_only: bool = False,
+        margin_mode: str = None,
+        leverage: int = None,
     ) -> dict:
-        """Place a signed limit order (requires body signature)."""
+        """Place a signed limit order (requires body signature).
+        
+        Args:
+            qty: Order quantity as decimal string (e.g., "0.01")
+            price: Order price as decimal string (e.g., "50000.00")
+            margin_mode: Optional margin mode (must match position if provided)
+            leverage: Optional leverage (must match position if provided)
+        """
         payload = {
             "symbol": symbol,
             "side": side,
@@ -360,7 +369,12 @@ class StandXAuth:
             "time_in_force": time_in_force,
             "reduce_only": reduce_only,
         }
+        if margin_mode is not None:
+            payload["margin_mode"] = margin_mode
+        if leverage is not None:
+            payload["leverage"] = leverage
         payload_str = json.dumps(payload, separators=(",", ":"))
+        print(f"\n[DEBUG] Order payload: {payload_str}")
         headers_extra = self._body_signature_headers(payload_str)
         return self.make_api_call(
             "/api/new_order",
@@ -440,14 +454,22 @@ def main():
 
     # Query and print user positions
     try:
-        positions = auth.query_positions()
+        positions = auth.query_positions(symbol=symbol)
         print("\nUser Positions:")
         if positions:
             print(json.dumps(positions, indent=2))
+            # Extract leverage and margin_mode from position for order placement
+            position = positions[0] if positions else None
+            current_leverage = int(position["leverage"]) if position else None
+            current_margin_mode = position["margin_mode"] if position else None
         else:
             print("  无持仓")
+            current_leverage = None
+            current_margin_mode = None
     except Exception as e:
         print(f"\n❌ 查询持仓失败: {e}")
+        current_leverage = None
+        current_margin_mode = None
 
     # Place a demo limit order using env-configured bps/qty/side
     try:
@@ -470,14 +492,17 @@ def main():
         if limit_price <= 0:
             raise ValueError("Computed limit price is non-positive")
         limit_price_str = f"{limit_price:.2f}"
+        qty_str = f"{qty:.4f}"
 
         order_resp = auth.new_limit_order(
             symbol=symbol,
             side=side,
-            qty=qty,
+            qty=qty_str,
             price=limit_price_str,
             time_in_force="gtc",
             reduce_only=False,
+            margin_mode=current_margin_mode,
+            leverage=current_leverage,
         )
         order_request_id = order_resp.get("request_id")
         print(f"\nPlaced {side} limit order @ {limit_price_str} ({bps} bps adj)")
@@ -488,28 +513,34 @@ def main():
 
     # Query order status using client order ID (request_id)
     if 'order_request_id' in locals() and order_request_id:
+        print(f"\n⏳ Waiting 5s for order to be recorded in backend...")
+        time.sleep(5)
+        
+        # Try query_open_orders with symbol
+        print(f"\n📋 Querying open orders for {symbol}...")
         try:
-            print(f"\n⏳ Waiting 2s for order to be recorded...")
-            time.sleep(2)
-            # Try query_open_orders first
-            print(f"\n1️⃣ Querying open orders for {symbol}...")
-            open_orders = auth.query_open_orders(symbol=symbol)
+            open_orders = auth.query_open_orders(symbol=symbol, limit=10)
             print(f"Open Orders ({symbol}):")
             if open_orders.get("result"):
-                print(json.dumps(open_orders["result"], indent=2))
+                for ord in open_orders["result"]:
+                    print(f"  ✅ {ord['cl_ord_id']}: {ord['status']} @ {ord['price']} qty={ord['qty']} side={ord['side']}")
             else:
                 print(f"  (empty, page_size={open_orders.get('page_size')})")
-            
-            # Try query_orders without filters
-            print(f"\n2️⃣ Querying all orders (no filter, last 5)...")
-            all_orders = auth.query_orders(limit=5)
-            print(f"Recent Orders:")
+        except Exception as e:
+            print(f"  ❌ Error: {e}")
+        
+        # Try query_orders with symbol filter
+        print(f"\n📜 Querying all orders with symbol={symbol}...")
+        try:
+            all_orders = auth.query_orders(symbol=symbol, limit=50)
+            print(f"Orders ({symbol}, recent 50):")
             if all_orders.get("result"):
-                print(json.dumps(all_orders["result"], indent=2))
+                for ord in all_orders["result"][:10]:  # Show first 10
+                    print(f"  - {ord['cl_ord_id']}: {ord['status']} @ {ord['price']} qty={ord['qty']} side={ord['side']}")
             else:
                 print(f"  (empty, page_size={all_orders.get('page_size')})")
         except Exception as e:
-            print(f"\n❌ 查询订单失败: {e}")
+            print(f"  ❌ Error: {e}")
 
 
 if __name__ == "__main__":
