@@ -10,6 +10,7 @@ import time
 import uuid
 import requests
 import jwt
+from functools import wraps
 from dotenv import load_dotenv
 from eth_account import Account
 from eth_account.messages import encode_defunct
@@ -24,6 +25,37 @@ CHAIN = "bsc"
 
 # Load environment variables
 load_dotenv()
+
+# Network configuration
+DEFAULT_TIMEOUT = 30  # 增加超时时间到30秒
+MAX_RETRIES = 3  # 最大重试次数
+RETRY_DELAY = 2  # 重试延迟（秒）
+
+
+def retry_on_network_error(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
+    """网络错误重试装饰器"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (requests.exceptions.Timeout, 
+                        requests.exceptions.ConnectionError,
+                        requests.exceptions.ProxyError) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        print(f"  ⚠️ 网络错误 (尝试 {attempt + 1}/{max_retries}): {type(e).__name__}，{delay}秒后重试...")
+                        time.sleep(delay)
+                    else:
+                        print(f"  ❌ 重试{max_retries}次后仍失败")
+                except Exception as e:
+                    # 非网络错误直接抛出
+                    raise
+            raise last_exception
+        return wrapper
+    return decorator
 
 
 class StandXAuth:
@@ -44,6 +76,7 @@ class StandXAuth:
         self.ed25519_signing_key = SigningKey.generate()
         self.request_id = b58encode(self.ed25519_signing_key.verify_key.encode()).decode()
         
+    @retry_on_network_error()
     def _get_prepare_signin_data(self) -> dict:
         """
         Step 1: Call prepare-signin to get signature data (signedData JWT)
@@ -69,7 +102,7 @@ class StandXAuth:
                 params=params,
                 json=payload,
                 headers=headers,
-                timeout=10
+                timeout=DEFAULT_TIMEOUT
             )
             response.raise_for_status()
             
@@ -147,6 +180,7 @@ class StandXAuth:
         except Exception as e:
             raise Exception(f"Signing error: {str(e)}")
     
+    @retry_on_network_error()
     def _get_access_token(self, signature: str, signed_data: str) -> dict:
         """
         Step 4: Call login endpoint with signature to get access token
@@ -179,7 +213,7 @@ class StandXAuth:
                 params={"chain": CHAIN},
                 json=payload,
                 headers=headers,
-                timeout=10
+                timeout=DEFAULT_TIMEOUT
             )
             response.raise_for_status()
             
@@ -243,6 +277,7 @@ class StandXAuth:
         """Get current access token for API calls"""
         return self.token
     
+    @retry_on_network_error()
     def make_api_call(self, endpoint: str, method: str = "GET", data: dict = None, params: dict = None, headers_extra: dict = None, raw_body: str = None) -> dict:
         """
         Make authenticated API call to StandX
@@ -271,15 +306,15 @@ class StandXAuth:
         try:
             method_up = method.upper()
             if method_up == "GET":
-                response = requests.get(url, headers=headers, params=params, timeout=10)
+                response = requests.get(url, headers=headers, params=params, timeout=DEFAULT_TIMEOUT)
             elif method_up == "POST":
                 if raw_body is not None:
                     response = requests.post(
-                        url, data=raw_body, headers=headers, params=params, timeout=10
+                        url, data=raw_body, headers=headers, params=params, timeout=DEFAULT_TIMEOUT
                     )
                 else:
                     response = requests.post(
-                        url, json=data, headers=headers, params=params, timeout=10
+                        url, json=data, headers=headers, params=params, timeout=DEFAULT_TIMEOUT
                     )
             else:
                 raise ValueError(f"Unsupported method: {method}")
@@ -287,6 +322,14 @@ class StandXAuth:
             response.raise_for_status()
             return response.json()
             
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response is not None else None
+            body = e.response.text if e.response is not None else None
+            # 特殊处理403签名过期错误
+            if status == 403 and body and "signature has expired" in body:
+                raise Exception(f"Body signature expired (403): {body} - 请检查系统时间是否同步")
+            detail = f" status={status} url={url} body={body}" if status else f" url={url}"
+            raise Exception(f"API call failed: {str(e)}{detail}")
         except requests.exceptions.RequestException as e:
             status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
             body = getattr(e.response, "text", None) if hasattr(e, "response") and e.response is not None else None

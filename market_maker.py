@@ -45,10 +45,17 @@ class MarketMaker:
         
     def get_current_price(self) -> float:
         """获取当前市场价格（优先mark_price，因奖励资格基于mark_price计算）"""
-        price_data = self.auth.query_symbol_price(self.symbol)
-        mark_price = price_data.get("mark_price")
-        mid_price = price_data.get("mid_price")
-        return float(mark_price or mid_price)
+        try:
+            price_data = self.auth.query_symbol_price(self.symbol)
+            mark_price = price_data.get("mark_price")
+            mid_price = price_data.get("mid_price")
+            price = float(mark_price or mid_price)
+            if not price or price <= 0:
+                raise ValueError(f"Invalid price: {price}")
+            return price
+        except Exception as e:
+            print(f"  ⚠️ 获取价格失败: {e}，将在下次迭代重试")
+            raise
     
     def calculate_order_prices(self, market_price: float) -> tuple:
         """
@@ -108,17 +115,21 @@ class MarketMaker:
     
     def refresh_orders(self):
         """刷新当前订单状态"""
-        open_orders = self.auth.query_open_orders(symbol=self.symbol)
-        orders = open_orders.get("result", [])
-        
-        self.buy_order = None
-        self.sell_order = None
-        
-        for order in orders:
-            if order["side"] == "buy":
-                self.buy_order = order
-            elif order["side"] == "sell":
-                self.sell_order = order
+        try:
+            open_orders = self.auth.query_open_orders(symbol=self.symbol)
+            orders = open_orders.get("result", [])
+            
+            self.buy_order = None
+            self.sell_order = None
+            
+            for order in orders:
+                if order["side"] == "buy":
+                    self.buy_order = order
+                elif order["side"] == "sell":
+                    self.sell_order = order
+        except Exception as e:
+            print(f"  ⚠️ 刷新订单状态失败: {e}")
+            # 不抛出异常，使用上次缓存的订单状态
     
     def check_and_adjust_orders(self, market_price: float) -> bool:
         """
@@ -273,8 +284,12 @@ class MarketMaker:
                 # 等待检查间隔
                 time.sleep(check_interval)
                 
-                # 获取当前价格
-                market_price = self.get_current_price()
+                # 获取当前价格（容错处理）
+                try:
+                    market_price = self.get_current_price()
+                except Exception as e:
+                    print(f"  ⚠️ 跳过本次迭代，继续监控...")
+                    continue
                 
                 print(f"\n[迭代 #{iteration}] 市价: {market_price:.2f} (运行时间: {int(elapsed)}秒)")
                 
@@ -294,11 +309,18 @@ class MarketMaker:
                 else:
                     print(f"  ⚠️ 无卖单")
                 
-                # 检查并调整订单
-                self.check_and_adjust_orders(market_price)
+                # 检查并调整订单（容错处理）
+                try:
+                    self.check_and_adjust_orders(market_price)
+                except Exception as e:
+                    print(f"  ⚠️ 调整订单失败: {e}，下次迭代重试...")
+                    continue
                 
         except KeyboardInterrupt:
             print(f"\n\n⚠️ 收到中断信号，停止策略...")
+        except Exception as e:
+            print(f"\n\n❌ 策略运行出现严重错误: {e}")
+            print(f"   正在清理订单并退出...")
         
         # 清理：取消所有订单
         print(f"\n🧹 清理所有订单...")
