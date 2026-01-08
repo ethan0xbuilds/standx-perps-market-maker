@@ -374,7 +374,6 @@ class StandXAuth:
         if leverage is not None:
             payload["leverage"] = leverage
         payload_str = json.dumps(payload, separators=(",", ":"))
-        print(f"\n[DEBUG] Order payload: {payload_str}")
         headers_extra = self._body_signature_headers(payload_str)
         return self.make_api_call(
             "/api/new_order",
