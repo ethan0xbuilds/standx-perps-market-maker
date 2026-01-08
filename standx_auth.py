@@ -29,7 +29,7 @@ load_dotenv()
 # Network configuration
 DEFAULT_TIMEOUT = 30  # 增加超时时间到30秒
 MAX_RETRIES = 3  # 最大重试次数
-RETRY_DELAY = 2  # 重试延迟（秒）
+RETRY_DELAY = 1  # 重试延迟（秒）- 优化为1秒
 
 
 def retry_on_network_error(max_retries=MAX_RETRIES, delay=RETRY_DELAY):

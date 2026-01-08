@@ -115,8 +115,8 @@ class MarketMaker:
         except Exception as e:
             print(f"  ❌ 卖单失败: {e}")
         
-        # 等待订单生效
-        time.sleep(3)
+        # 等待订单生效（优化为1秒）
+        time.sleep(1)
         self.refresh_orders()
     
     def refresh_orders(self):
@@ -212,8 +212,8 @@ class MarketMaker:
                 except Exception as e:
                     print(f"  ❌ 取消失败: {e}")
             
-            # 等待取消生效
-            time.sleep(3)
+            # 等待取消生效（优化为1秒）
+            time.sleep(1)
             
             # 重新下单
             print(f"\n♻️ 重新挂{self.target_bps}bps限价单...")
@@ -263,8 +263,8 @@ class MarketMaker:
             except Exception as e:
                 print(f"  ❌ 卖单失败: {e}")
         
-        # 等待订单生效
-        time.sleep(3)
+        # 等待订单生效（优化为1秒）
+        time.sleep(1)
         self.refresh_orders()
     
     def run(self, check_interval: int = 10, duration: int = None):
@@ -399,8 +399,8 @@ def main():
         max_bps=max_bps,
     )
     
-    # 运行策略（10分钟测试）
-    market_maker.run(check_interval=5, duration=600)
+    # 运行策略（2秒监控间隔，10分钟测试）
+    market_maker.run(check_interval=2, duration=600)
 
 
 if __name__ == "__main__":
