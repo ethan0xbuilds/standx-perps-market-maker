@@ -23,6 +23,17 @@ source .venv/bin/activate
 # 创建日志目录
 mkdir -p logs
 
+# 日志文件路径
+LOG_FILE="logs/market_maker.log"
+
+# 如果日志文件已存在，转储备份并加上时间戳
+if [ -f "$LOG_FILE" ]; then
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    BACKUP_LOG="logs/market_maker_${TIMESTAMP}.log"
+    mv "$LOG_FILE" "$BACKUP_LOG"
+    echo "📦 日志已备份: $BACKUP_LOG"
+fi
+
 # 检查是否已经在运行
 if [ -f "logs/market_maker.pid" ]; then
     PID=$(cat logs/market_maker.pid)
@@ -35,7 +46,7 @@ fi
 
 # 启动策略（python -u 禁用缓冲，实时写入日志）
 echo "🚀 启动 Market Maker..."
-nohup python -u market_maker.py >> logs/market_maker.log 2>&1 &
+nohup python -u market_maker.py >> "$LOG_FILE" 2>&1 &
 PID=$!
 
 # 保存 PID
@@ -43,7 +54,7 @@ echo "$PID" > logs/market_maker.pid
 
 echo "✅ Market maker 已启动"
 echo "   PID: $PID"
-echo "   日志: logs/market_maker.log"
+echo "   日志: $LOG_FILE"
 echo ""
-echo "监控日志: tail -f logs/market_maker.log"
+echo "监控日志: tail -f $LOG_FILE"
 echo "停止运行: ./stop.sh"
