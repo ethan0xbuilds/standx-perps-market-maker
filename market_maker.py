@@ -11,6 +11,7 @@ import time
 import signal
 from dotenv import load_dotenv
 from standx_auth import StandXAuth
+import standx_api as api
 
 load_dotenv()
 
@@ -38,7 +39,7 @@ class MarketMaker:
         self.max_bps = max_bps
         
         # 获取持仓配置
-        positions = auth.query_positions(symbol=symbol)
+        positions = api.query_positions(auth, symbol=symbol)
         position = positions[0] if positions else None
         self.leverage = int(position["leverage"]) if position else 40
         self.margin_mode = position["margin_mode"] if position else "cross"
@@ -63,7 +64,7 @@ class MarketMaker:
     def get_current_price(self) -> float:
         """获取当前市场价格（优先mark_price，因奖励资格基于mark_price计算）"""
         try:
-            price_data = self.auth.query_symbol_price(self.symbol)
+            price_data = api.query_symbol_price(self.auth, self.symbol)
             mark_price = price_data.get("mark_price")
             mid_price = price_data.get("mid_price")
             price = float(mark_price or mid_price)
@@ -85,7 +86,7 @@ class MarketMaker:
             True if closed successfully, False otherwise
         """
         try:
-            positions = self.auth.query_positions(symbol=self.symbol)
+            positions = api.query_positions(self.auth, symbol=self.symbol)
             if not positions:
                 return True
             
@@ -119,7 +120,8 @@ class MarketMaker:
             
             print(f"\n💰 检测到持仓，立即平仓: {close_side} {qty_send}")
             
-            close_resp = self.auth.new_market_order(
+            close_resp = api.new_market_order(
+                self.auth,
                 symbol=self.symbol,
                 side=close_side,
                 qty=qty_send,
@@ -135,7 +137,7 @@ class MarketMaker:
             start = time.time()
             while time.time() - start < 30:
                 time.sleep(1)
-                latest_positions = self.auth.query_positions(symbol=self.symbol)
+                latest_positions = api.query_positions(self.auth, symbol=self.symbol)
                 if not latest_positions:
                     print("  ✅ 持仓已清空")
                     return True
@@ -172,7 +174,8 @@ class MarketMaker:
         
         # 下买单
         try:
-            buy_resp = self.auth.new_limit_order(
+            buy_resp = api.new_limit_order(
+                self.auth,
                 symbol=self.symbol,
                 side="buy",
                 qty=self.qty,
@@ -188,7 +191,8 @@ class MarketMaker:
         
         # 下卖单
         try:
-            sell_resp = self.auth.new_limit_order(
+            sell_resp = api.new_limit_order(
+                self.auth,
                 symbol=self.symbol,
                 side="sell",
                 qty=self.qty,
@@ -209,7 +213,7 @@ class MarketMaker:
     def refresh_orders(self):
         """刷新当前订单状态"""
         try:
-            open_orders = self.auth.query_open_orders(symbol=self.symbol)
+            open_orders = api.query_open_orders(self.auth, symbol=self.symbol)
             orders = open_orders.get("result", [])
             
             self.buy_order = None
@@ -240,7 +244,7 @@ class MarketMaker:
         self.refresh_orders()
         
         # 第1步：检查持仓，存在则平仓
-        positions = self.auth.query_positions(symbol=self.symbol)
+        positions = api.query_positions(self.auth, symbol=self.symbol)
         if positions:
             position = positions[0]
             qty = position.get("qty")
@@ -286,7 +290,7 @@ class MarketMaker:
         
         for order in orders_to_cancel:
             try:
-                cancel_resp = self.auth.cancel_order(order_id=order["id"])
+                cancel_resp = api.cancel_order(self.auth, order_id=order["id"])
                 print(f"  ✅ 取消 {order['side']} 订单 @ {order['price']}")
             except Exception as e:
                 print(f"  ❌ 取消失败: {e}")
@@ -388,7 +392,7 @@ class MarketMaker:
         
         for order in orders_to_cancel:
             try:
-                cancel_resp = self.auth.cancel_order(order_id=order["id"])
+                cancel_resp = api.cancel_order(self.auth, order_id=order["id"])
                 print(f"  ✅ 取消 {order['side']} 订单: {order['cl_ord_id']}")
             except Exception as e:
                 print(f"  ❌ 取消失败: {e}")
