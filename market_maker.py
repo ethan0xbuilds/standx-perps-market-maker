@@ -239,18 +239,18 @@ class MarketMaker:
             buy_price = float(self.buy_order["price"])
             buy_bps = abs((market_price - buy_price) / market_price * 10000)
             
-            # 两层检查：先看是否超过硬阈值，再看是否超出目标范围
+            # 单层检查：偏离过大(>10)或过小(<7)时重新挂，[7,10]范围内保持
             if buy_bps > self.max_bps:
-                print(f"\n🚨 买单偏离HARD LIMIT: {buy_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
+                print(f"\n🚨 买单偏离过大: {buy_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
                 print(f"   订单价格: {buy_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.buy_order)
                 adjusted = True
-            elif buy_bps < self.target_lower or buy_bps > self.target_upper:
-                print(f"\n⚠️ 买单偏离目标范围: {buy_bps:.1f} bps 不在 [{self.target_lower}, {self.target_upper}] bps")
+            elif buy_bps < self.target_lower:
+                print(f"\n⚠️ 买单偏离过小: {buy_bps:.1f} bps < {self.target_lower} bps (贴近市价，重新挂)")
                 print(f"   订单价格: {buy_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.buy_order)
                 adjusted = True
-            # else: 在目标范围内或在缓冲区，维持订单
+            # else: 在[7,10]范围内，保持订单不动
         else:
             # 买单缺失（可能成交了），需要补单
             print(f"\n💰 买单缺失（可能已成交），准备补单...")
@@ -262,18 +262,18 @@ class MarketMaker:
             sell_price = float(self.sell_order["price"])
             sell_bps = abs((sell_price - market_price) / market_price * 10000)
             
-            # 两层检查：先看是否超过硬阈值，再看是否超出目标范围
+            # 单层检查：偏离过大(>10)或过小(<7)时重新挂，[7,10]范围内保持
             if sell_bps > self.max_bps:
-                print(f"\n🚨 卖单偏离HARD LIMIT: {sell_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
+                print(f"\n🚨 卖单偏离过大: {sell_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
                 print(f"   订单价格: {sell_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.sell_order)
                 adjusted = True
-            elif sell_bps < self.target_lower or sell_bps > self.target_upper:
-                print(f"\n⚠️ 卖单偏离目标范围: {sell_bps:.1f} bps 不在 [{self.target_lower}, {self.target_upper}] bps")
+            elif sell_bps < self.target_lower:
+                print(f"\n⚠️ 卖单偏离过小: {sell_bps:.1f} bps < {self.target_lower} bps (贴近市价，重新挂)")
                 print(f"   订单价格: {sell_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.sell_order)
                 adjusted = True
-            # else: 在目标范围内或在缓冲区，维持订单
+            # else: 在[7,10]范围内，保持订单不动
         else:
             # 卖单缺失（可能成交了），需要补单
             print(f"\n💰 卖单缺失（可能已成交），准备补单...")
