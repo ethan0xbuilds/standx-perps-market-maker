@@ -87,7 +87,11 @@ class MarketMaker:
         """
         try:
             balance_data = api.query_balance(self.auth)
-            total_balance = float(balance_data.get("total_balance", 0))
+            # Debug: print actual response to verify field names
+            print(f"  🔍 余额查询响应: {balance_data}")
+            
+            # 优先使用 'balance' 字段（总余额），备用 'equity'
+            total_balance = float(balance_data.get("balance") or balance_data.get("equity") or 0)
             
             old_mode = self.current_mode
             
