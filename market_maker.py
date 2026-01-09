@@ -16,7 +16,7 @@ load_dotenv()
 class MarketMaker:
     """双向限价单做市器"""
     
-    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, min_bps: float = 7.0, max_bps: float = 10, auto_close_on_fill: bool = True):
+    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, min_bps: float = 7.0, max_bps: float = 10):
         """
         初始化做市器
         
@@ -27,7 +27,6 @@ class MarketMaker:
             target_bps: 目标挂单偏离（basis points，默认7.5，用于初始下单）
             min_bps: 最小允许偏离（默认7.0，低于此值重新挂单）
             max_bps: 最大允许偏离（默认10，超过此值重新挂单）
-            auto_close_on_fill: 成交后立即平仓（默认True，释放保证金）
         """
         self.auth = auth
         self.symbol = symbol
@@ -35,7 +34,6 @@ class MarketMaker:
         self.target_bps = target_bps
         self.min_bps = min_bps
         self.max_bps = max_bps
-        self.auto_close_on_fill = auto_close_on_fill
         
         # 获取持仓配置
         positions = auth.query_positions(symbol=symbol)
@@ -213,10 +211,10 @@ class MarketMaker:
     
     def check_and_adjust_orders(self, market_price: float) -> bool:
         """
-        检查订单是否需要调整（两层控制策略）
+        检查订单是否需要调整（简化逻辑）
         
-        - 软阈值[target_lower, target_upper]：在范围内维持订单，不调整
-        - 硬阈值max_bps：超过才必须取消重新挂
+        1. 检查持仓，存在则立即平仓
+        2. 检查订单偏离，任一方超出[min_bps, max_bps]则取消所有订单并重挂
         
         Args:
             market_price: 当前市场价格
@@ -226,129 +224,57 @@ class MarketMaker:
         """
         self.refresh_orders()
         
-        adjusted = False
-        orders_to_cancel = []
-        missing_sides = []
+        # 第1步：检查持仓，存在则平仓
+        positions = self.auth.query_positions(symbol=self.symbol)
+        if positions:
+            position = positions[0]
+            qty = position.get("qty")
+            if qty and float(qty) != 0:
+                print(f"\n💰 检测到持仓 (qty={qty})，立即平仓...")
+                self.close_position(market_price)
         
-        # 检查买单
+        # 第2步：检查买单和卖单偏离
+        need_rehang = False
+        
         if self.buy_order:
             buy_price = float(self.buy_order["price"])
             buy_bps = abs((market_price - buy_price) / market_price * 10000)
             
-            # 单层检查：偏离过大(>max_bps)或过小(<min_bps)时重新挂，[min_bps, max_bps]范围内保持
-            if buy_bps > self.max_bps:
-                print(f"\n🚨 买单偏离过大: {buy_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
-                print(f"   订单价格: {buy_price:.2f}, 市价: {market_price:.2f}")
-                orders_to_cancel.append(self.buy_order)
-                adjusted = True
-            elif buy_bps < self.min_bps:
-                print(f"\n⚠️ 买单偏离过小: {buy_bps:.1f} bps < {self.min_bps} bps (贴近市价，重新挂)")
-                print(f"   订单价格: {buy_price:.2f}, 市价: {market_price:.2f}")
-                orders_to_cancel.append(self.buy_order)
-                adjusted = True
-            # else: 在[min_bps, max_bps]范围内，保持订单不动
-        else:
-            # 买单缺失（可能成交了），需要补单
-            print(f"\n💰 买单缺失（可能已成交），准备补单...")
-            missing_sides.append("buy")
-            adjusted = True
+            if buy_bps < self.min_bps or buy_bps > self.max_bps:
+                print(f"\n🚨 买单偏离范围: {buy_bps:.1f} bps 不在 [{self.min_bps}, {self.max_bps}]")
+                need_rehang = True
         
-        # 检查卖单
         if self.sell_order:
             sell_price = float(self.sell_order["price"])
             sell_bps = abs((sell_price - market_price) / market_price * 10000)
             
-            # 单层检查：偏离过大(>max_bps)或过小(<min_bps)时重新挂，[min_bps, max_bps]范围内保持
-            if sell_bps > self.max_bps:
-                print(f"\n🚨 卖单偏离过大: {sell_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
-                print(f"   订单价格: {sell_price:.2f}, 市价: {market_price:.2f}")
-                orders_to_cancel.append(self.sell_order)
-                adjusted = True
-            elif sell_bps < self.min_bps:
-                print(f"\n⚠️ 卖单偏离过小: {sell_bps:.1f} bps < {self.min_bps} bps (贴近市价，重新挂)")
-                print(f"   订单价格: {sell_price:.2f}, 市价: {market_price:.2f}")
-                orders_to_cancel.append(self.sell_order)
-                adjusted = True
-            # else: 在[min_bps, max_bps]范围内，保持订单不动
-        else:
-            # 卖单缺失（可能成交了），需要补单
-            print(f"\n💰 卖单缺失（可能已成交），准备补单...")
-            missing_sides.append("sell")
-            adjusted = True
+            if sell_bps < self.min_bps or sell_bps > self.max_bps:
+                print(f"\n🚨 卖单偏离范围: {sell_bps:.1f} bps 不在 [{self.min_bps}, {self.max_bps}]")
+                need_rehang = True
         
-        # 取消偏离的订单
-        if orders_to_cancel:
-            print(f"\n🗑️ 取消 {len(orders_to_cancel)} 个订单...")
-            for order in orders_to_cancel:
-                try:
-                    cancel_resp = self.auth.cancel_order(order_id=order["id"])
-                    print(f"  ✅ 取消成功: {order['side']} @ {order['price']} (request_id: {cancel_resp.get('request_id')})")
-                except Exception as e:
-                    print(f"  ❌ 取消失败: {e}")
-            
-            # 等待取消生效（优化为1秒）
+        if need_rehang:
+            print(f"   取消所有订单并重新挂...")
+            self.cancel_all_orders()
             time.sleep(1)
-            
-            # 重新下单
-            print(f"\n♻️ 重新挂{self.target_bps}bps限价单...")
             self.place_orders(market_price)
-        elif missing_sides:
-            # 检测到成交，按配置决定是否平仓
-            if self.auto_close_on_fill:
-                # 成交即平仓策略：立即平仓，然后补单
-                print(f"\n♻️ 成交即平仓模式: 检测到成交，立即平仓...")
-                time.sleep(1)
-                self.close_position(market_price)
-                time.sleep(1)
-                print(f"\n♻️ 补{', '.join(missing_sides)}单（{self.target_bps}bps）...")
-            else:
-                # 成交补单模式：只补单不平仓
-                print(f"\n♻️ 补{', '.join(missing_sides)}单（{self.target_bps}bps）...")
-            self.place_missing_orders(market_price, missing_sides)
+            return True
         
-        return adjusted
+        return False
     
-    def place_missing_orders(self, market_price: float, missing_sides: list):
-        """只挂缺失的单边订单"""
-        buy_price, sell_price = self.calculate_order_prices(market_price)
+    def cancel_all_orders(self):
+        """取消所有订单"""
+        orders_to_cancel = []
+        if self.buy_order:
+            orders_to_cancel.append(self.buy_order)
+        if self.sell_order:
+            orders_to_cancel.append(self.sell_order)
         
-        # 补买单
-        if "buy" in missing_sides:
+        for order in orders_to_cancel:
             try:
-                buy_resp = self.auth.new_limit_order(
-                    symbol=self.symbol,
-                    side="buy",
-                    qty=self.qty,
-                    price=f"{buy_price:.2f}",
-                    time_in_force="gtc",
-                    reduce_only=False,
-                    margin_mode=self.margin_mode,
-                    leverage=self.leverage,
-                )
-                print(f"  ✅ 买单: {self.qty} @ {buy_price:.2f} (request_id: {buy_resp.get('request_id')})")
+                cancel_resp = self.auth.cancel_order(order_id=order["id"])
+                print(f"  ✅ 取消 {order['side']} 订单 @ {order['price']}")
             except Exception as e:
-                print(f"  ❌ 买单失败: {e}")
-        
-        # 补卖单
-        if "sell" in missing_sides:
-            try:
-                sell_resp = self.auth.new_limit_order(
-                    symbol=self.symbol,
-                    side="sell",
-                    qty=self.qty,
-                    price=f"{sell_price:.2f}",
-                    time_in_force="gtc",
-                    reduce_only=False,
-                    margin_mode=self.margin_mode,
-                    leverage=self.leverage,
-                )
-                print(f"  ✅ 卖单: {self.qty} @ {sell_price:.2f} (request_id: {sell_resp.get('request_id')})")
-            except Exception as e:
-                print(f"  ❌ 卖单失败: {e}")
-        
-        # 等待订单生效（优化为1秒）
-        time.sleep(1)
-        self.refresh_orders()
+                print(f"  ❌ 取消失败: {e}")
     
     def run(self, check_interval: int = 10, duration: int = None):
         """
@@ -364,8 +290,7 @@ class MarketMaker:
         print(f"交易对: {self.symbol}")
         print(f"订单数量: {self.qty}")
         print(f"目标偏离: {self.target_bps} bps")
-        print(f"目标范围: [{self.target_lower}, {self.target_upper}] bps (±{self.tolerance_bps} bps)")
-        print(f"硬阈值: {self.max_bps} bps (超过必须重新挂)")
+        print(f"维护范围: [{self.min_bps}, {self.max_bps}] bps")
         print(f"检查间隔: {check_interval}秒")
         print(f"运行时长: {duration}秒" if duration else "运行时长: 无限")
         print("=" * 60)
@@ -465,7 +390,6 @@ def main():
     target_bps = float(os.getenv("MARKET_MAKER_TARGET_BPS", "7.5"))
     min_bps = float(os.getenv("MARKET_MAKER_MIN_BPS", "7.0"))
     max_bps = float(os.getenv("MARKET_MAKER_MAX_BPS", "10"))
-    auto_close = os.getenv("AUTO_CLOSE_ON_FILL", "true").lower() == "true"
     
     # 认证
     print("🔐 认证中...")
@@ -481,7 +405,6 @@ def main():
         target_bps=target_bps,
         min_bps=min_bps,
         max_bps=max_bps,
-        auto_close_on_fill=auto_close,
     )
     
     # 运行策略（2秒监控间隔，默认无限运行）
