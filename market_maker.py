@@ -6,7 +6,9 @@
 """
 
 import os
+import sys
 import time
+import signal
 from dotenv import load_dotenv
 from standx_auth import StandXAuth
 
@@ -44,6 +46,19 @@ class MarketMaker:
         # 当前订单
         self.buy_order = None
         self.sell_order = None
+        
+        # 优雅关闭相关
+        self._shutdown_requested = False
+        self._setup_signal_handlers()
+    
+    def _setup_signal_handlers(self):
+        """设置信号处理器以支持优雅关闭"""
+        def handle_signal(signum, frame):
+            print(f"\n🛑 收到信号 {signum}，准备优雅关闭...")
+            self._shutdown_requested = True
+        
+        signal.signal(signal.SIGTERM, handle_signal)
+        signal.signal(signal.SIGINT, handle_signal)
         
     def get_current_price(self) -> float:
         """获取当前市场价格（优先mark_price，因奖励资格基于mark_price计算）"""
@@ -308,6 +323,11 @@ class MarketMaker:
             while True:
                 iteration += 1
                 elapsed = time.time() - start_time
+                
+                # 检查是否收到关闭信号
+                if self._shutdown_requested:
+                    print(f"\n⏰ 收到关闭信号，停止策略")
+                    break
                 
                 if duration and elapsed > duration:
                     print(f"\n⏰ 运行时长达到 {duration}秒，停止策略")
