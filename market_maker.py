@@ -2,7 +2,7 @@
 双向限价单做市策略
 - 同时挂买单和卖单
 - 监控价格变化
-- 当订单价格偏离超过70bps时，取消并重新挂50bps的单
+- 订单偏离超过阈值时取消并重新挂单
 """
 
 import os
@@ -239,7 +239,7 @@ class MarketMaker:
             buy_price = float(self.buy_order["price"])
             buy_bps = abs((market_price - buy_price) / market_price * 10000)
             
-            # 单层检查：偏离过大(>10)或过小(<7)时重新挂，[7,10]范围内保持
+            # 单层检查：偏离过大(>max_bps)或过小(<target_lower)时重新挂，[target_lower, max_bps]范围内保持
             if buy_bps > self.max_bps:
                 print(f"\n🚨 买单偏离过大: {buy_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
                 print(f"   订单价格: {buy_price:.2f}, 市价: {market_price:.2f}")
@@ -250,7 +250,7 @@ class MarketMaker:
                 print(f"   订单价格: {buy_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.buy_order)
                 adjusted = True
-            # else: 在[7,10]范围内，保持订单不动
+            # else: 在[target_lower, max_bps]范围内，保持订单不动
         else:
             # 买单缺失（可能成交了），需要补单
             print(f"\n💰 买单缺失（可能已成交），准备补单...")
@@ -262,7 +262,7 @@ class MarketMaker:
             sell_price = float(self.sell_order["price"])
             sell_bps = abs((sell_price - market_price) / market_price * 10000)
             
-            # 单层检查：偏离过大(>10)或过小(<7)时重新挂，[7,10]范围内保持
+            # 单层检查：偏离过大(>max_bps)或过小(<target_lower)时重新挂，[target_lower, max_bps]范围内保持
             if sell_bps > self.max_bps:
                 print(f"\n🚨 卖单偏离过大: {sell_bps:.1f} bps > {self.max_bps} bps (必须重新挂)")
                 print(f"   订单价格: {sell_price:.2f}, 市价: {market_price:.2f}")
@@ -273,7 +273,7 @@ class MarketMaker:
                 print(f"   订单价格: {sell_price:.2f}, 市价: {market_price:.2f}")
                 orders_to_cancel.append(self.sell_order)
                 adjusted = True
-            # else: 在[7,10]范围内，保持订单不动
+            # else: 在[target_lower, max_bps]范围内，保持订单不动
         else:
             # 卖单缺失（可能成交了），需要补单
             print(f"\n💰 卖单缺失（可能已成交），准备补单...")
