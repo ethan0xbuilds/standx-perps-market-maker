@@ -426,6 +426,49 @@ class StandXAuth:
             raw_body=payload_str,
         )
 
+    def new_market_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: str,
+        reduce_only: bool = False,
+        margin_mode: str = None,
+        leverage: int = None,
+        time_in_force: str = "ioc",
+    ) -> dict:
+        """Place a signed market order (requires body signature).
+        
+        Args:
+            symbol: Trading pair (e.g., "BTC-USD")
+            side: "buy" or "sell"
+            qty: Order quantity as decimal string (e.g., "0.01")
+            reduce_only: If True, only reduce existing position
+            margin_mode: Optional margin mode (must match position if provided)
+            leverage: Optional leverage (must match position if provided)
+            time_in_force: Market order TIF, defaults to IOC
+        """
+        payload = {
+            "symbol": symbol,
+            "side": side,
+            "order_type": "market",
+            "qty": qty,
+            "reduce_only": reduce_only,
+            "time_in_force": time_in_force,
+        }
+        if margin_mode is not None:
+            payload["margin_mode"] = margin_mode
+        if leverage is not None:
+            payload["leverage"] = leverage
+        payload_str = json.dumps(payload, separators=(",", ":"))
+        headers_extra = self._body_signature_headers(payload_str)
+        return self.make_api_call(
+            "/api/new_order",
+            method="POST",
+            data=payload,
+            headers_extra=headers_extra,
+            raw_body=payload_str,
+        )
+
     def cancel_order(self, order_id: int = None, cl_ord_id: str = None) -> dict:
         """
         Cancel an existing order (requires body signature).

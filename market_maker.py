@@ -81,23 +81,62 @@ class MarketMaker:
                 return True
             
             position = positions[0]
-            qty = position.get("qty")
-            side = position.get("side")
+            qty_str = position.get("qty")
+            side = position.get("side")  # 可能为 None
+            margin_mode = position.get("margin_mode")
+            leverage = int(position.get("leverage")) if position.get("leverage") else None
             
-            if qty and float(qty) > 0:
-                # 反向平仓
-                close_side = "sell" if side == "buy" else "buy"
-                print(f"\n💰 检测到持仓，立即平仓: {close_side} {qty}")
-                
-                close_resp = self.auth.new_market_order(
-                    symbol=self.symbol,
-                    side=close_side,
-                    qty=qty,
-                    reduce_only=True,
-                )
-                
-                print(f"  ✅ 平仓成功: {close_side} @ 市价 (request_id: {close_resp.get('request_id')})")
+            # 打印持仓详情便于调试
+            print(f"  📍 持仓详情: qty={qty_str}, side={side}, margin_mode={margin_mode}, leverage={leverage}")
+            
+            if not qty_str or float(qty_str) == 0:
+                print(f"  ⚠️ 持仓数量为 0，无需平仓")
                 return True
+            
+            qty_f = float(qty_str)
+            
+            # 判断平仓方向：StandX API 可能不返回 side 字段，需通过 qty 正负判断
+            if qty_f > 0:
+                # qty > 0 通常表示多头 (buy)，平仓用 sell
+                close_side = "sell"
+                qty_send = qty_str
+            elif qty_f < 0:
+                # qty < 0 通常表示空头 (sell)，平仓用 buy
+                close_side = "buy"
+                qty_send = f"{abs(qty_f):.4f}"
+            else:
+                print(f"  ⚠️ 持仓数量为 0，无需平仓")
+                return True
+            
+            print(f"\n💰 检测到持仓，立即平仓: {close_side} {qty_send}")
+            
+            close_resp = self.auth.new_market_order(
+                symbol=self.symbol,
+                side=close_side,
+                qty=qty_send,
+                reduce_only=True,
+                margin_mode=margin_mode,
+                leverage=leverage,
+                time_in_force="ioc",
+            )
+            
+            print(f"  ✅ 平仓请求已提交 (request_id: {close_resp.get('request_id')})，验证中...")
+            
+            # 验证：轮询持仓是否已归零（最多30秒）
+            start = time.time()
+            while time.time() - start < 30:
+                time.sleep(1)
+                latest_positions = self.auth.query_positions(symbol=self.symbol)
+                if not latest_positions:
+                    print("  ✅ 持仓已清空")
+                    return True
+                latest_qty = float(latest_positions[0].get("qty") or 0)
+                if latest_qty == 0:
+                    print("  ✅ 持仓数量为 0（已平仓）")
+                    return True
+            
+            print("  ⚠️ 超时：持仓仍未归零，稍后会在下一轮重试")
+            return False
         except Exception as e:
             print(f"  ⚠️ 平仓失败: {e}")
             return False
