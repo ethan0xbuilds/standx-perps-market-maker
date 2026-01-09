@@ -41,11 +41,16 @@ python market_maker.py
 ```
 WALLET_PRIVATE_KEY=0x...
 LIMIT_ORDER_SYMBOL=BTC-USD
-LIMIT_ORDER_QTY=0.004
+LIMIT_ORDER_QTY=0.005
 LIMIT_ORDER_BPS=7.5
-LIMIT_ORDER_TOLERANCE_BPS=0.5   # 目标范围 7.0-8.0 bps
-MAX_ORDER_BPS=10                # 硬阈值，超过必须重挂
+LIMIT_ORDER_TOLERANCE_BPS=0.5       # 目标范围 7.0-8.0 bps
+MAX_ORDER_BPS=10                    # 硬阈值，超过必须重挂
+AUTO_CLOSE_ON_FILL=true             # 成交即平仓（释放保证金）
 ```
+
+**成交即平仓机制**：
+- **启用（true）**：成交后立即市价平仓，只损失手续费（0.05%），释放保证金，可无限做市
+- **禁用（false）**：成交后直接补单，不平仓，保证金会被占用（保守策略）
 
 ## 运行模式配置
 默认无限运行。若需设置有限时长（如测试10分钟或跑24小时），可修改 [market_maker.py](market_maker.py#L403) 的 `main()` 调用：

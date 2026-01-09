@@ -16,7 +16,7 @@ load_dotenv()
 class MarketMaker:
     """双向限价单做市器"""
     
-    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, tolerance_bps: float = 0.5, max_bps: float = 10):
+    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, tolerance_bps: float = 0.5, max_bps: float = 10, auto_close_on_fill: bool = True):
         """
         初始化做市器
         
@@ -27,6 +27,7 @@ class MarketMaker:
             target_bps: 目标挂单偏离（basis points，默认7.5）
             tolerance_bps: 目标范围容差（默认0.5，即[7.0, 8.0]bps）
             max_bps: 最大允许偏离硬阈值（超过后必须重新挂，默认10符合奖励资格）
+            auto_close_on_fill: 成交后立即平仓（默认True，释放保证金）
         """
         self.auth = auth
         self.symbol = symbol
@@ -34,6 +35,7 @@ class MarketMaker:
         self.target_bps = target_bps
         self.tolerance_bps = tolerance_bps
         self.max_bps = max_bps
+        self.auto_close_on_fill = auto_close_on_fill
         
         # 计算目标范围
         self.target_lower = target_bps - tolerance_bps
@@ -62,6 +64,43 @@ class MarketMaker:
         except Exception as e:
             print(f"  ⚠️ 获取价格失败: {e}，将在下次迭代重试")
             raise
+    
+    def close_position(self, market_price: float) -> bool:
+        """
+        平仓所有持仓（市价单）
+        
+        Args:
+            market_price: 当前市场价格
+            
+        Returns:
+            True if closed successfully, False otherwise
+        """
+        try:
+            positions = self.auth.query_positions(symbol=self.symbol)
+            if not positions:
+                return True
+            
+            position = positions[0]
+            qty = position.get("qty")
+            side = position.get("side")
+            
+            if qty and float(qty) > 0:
+                # 反向平仓
+                close_side = "sell" if side == "buy" else "buy"
+                print(f"\n💰 检测到持仓，立即平仓: {close_side} {qty}")
+                
+                close_resp = self.auth.new_market_order(
+                    symbol=self.symbol,
+                    side=close_side,
+                    qty=qty,
+                    reduce_only=True,
+                )
+                
+                print(f"  ✅ 平仓成功: {close_side} @ 市价 (request_id: {close_resp.get('request_id')})")
+                return True
+        except Exception as e:
+            print(f"  ⚠️ 平仓失败: {e}")
+            return False
     
     def calculate_order_prices(self, market_price: float) -> tuple:
         """
@@ -219,8 +258,17 @@ class MarketMaker:
             print(f"\n♻️ 重新挂{self.target_bps}bps限价单...")
             self.place_orders(market_price)
         elif missing_sides:
-            # 只补缺失的单边（成交后不平仓策略）
-            print(f"\n♻️ 补{', '.join(missing_sides)}单（{self.target_bps}bps）...")
+            # 检测到成交，按配置决定是否平仓
+            if self.auto_close_on_fill:
+                # 成交即平仓策略：立即平仓，然后补单
+                print(f"\n♻️ 成交即平仓模式: 检测到成交，立即平仓...")
+                time.sleep(1)
+                self.close_position(market_price)
+                time.sleep(1)
+                print(f"\n♻️ 补{', '.join(missing_sides)}单（{self.target_bps}bps）...")
+            else:
+                # 成交补单模式：只补单不平仓
+                print(f"\n♻️ 补{', '.join(missing_sides)}单（{self.target_bps}bps）...")
             self.place_missing_orders(market_price, missing_sides)
         
         return adjusted
@@ -382,6 +430,7 @@ def main():
     target_bps = float(os.getenv("LIMIT_ORDER_BPS", "7.5"))
     tolerance_bps = float(os.getenv("LIMIT_ORDER_TOLERANCE_BPS", "0.5"))  # ±0.5bps容差
     max_bps = float(os.getenv("MAX_ORDER_BPS", "10"))  # 硬阈值
+    auto_close = os.getenv("AUTO_CLOSE_ON_FILL", "true").lower() == "true"  # 成交即平仓
     
     # 认证
     print("🔐 认证中...")
@@ -397,6 +446,7 @@ def main():
         target_bps=target_bps,
         tolerance_bps=tolerance_bps,
         max_bps=max_bps,
+        auto_close_on_fill=auto_close,
     )
     
     # 运行策略（2秒监控间隔，默认无限运行）
