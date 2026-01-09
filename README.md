@@ -4,13 +4,17 @@
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Status](https://img.shields.io/badge/status-alpha-orange)
 
-简述：基于 StandX Perps (BSC) 的双向限价做市脚本，默认挂 7.5 bps 买卖双向单；软阈值 7.0–8.0 bps，硬阈值 10 bps；偏离或成交后自动补单并维持双边挂单。
+简述：基于 StandX Perps (BSC) 的双向限价做市脚本，以 target_bps（默认 7.5）为中心挂单，维持价格偏离范围 [min_bps, max_bps]，超出时自动重挂；0.5 秒监控间隔，持续运行至收到停止信号。
 
 ## 功能概览
-- 认证与签名：EIP-191 + Ed25519 体签 ([standx_auth.py](standx_auth.py))，带 30s HTTP 超时与网络重试。
-- 做市策略：双向限价单，2 秒监控；两层控制（软阈值保持、硬阈值强制重挂）([market_maker.py](market_maker.py)).
-- 价格源：优先使用 mark_price，保证奖励资格判定一致。
-- 容错：Timeout/ConnectionError/ProxyError 自动重试，订单状态刷新失败时使用上次缓存继续运行。
+- **三层架构**：
+  - [standx_auth.py](standx_auth.py)：钱包认证与 HTTP 工具（`make_api_call`、`_body_signature_headers`）
+  - [standx_api.py](standx_api.py)：API 方法库（9 个函数）
+  - [market_maker.py](market_maker.py)：做市策略主程序
+- 做市策略：0.5 秒轮询监控，三步流程（检查持仓 → 检查价格偏离 → 重挂订单）
+- 价格源：优先使用 mark_price，保证奖励资格判定一致
+- 容错：Timeout/ConnectionError/ProxyError 自动重试 3 次；订单刷新失败时使用上次缓存继续运行
+- 优雅关闭：支持 SIGTERM/SIGINT 信号处理，停止时自动取消所有订单
 
 ## 环境要求
 - Python 3.11+
@@ -33,40 +37,41 @@ pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，填入私钥和参数
 
-# 运行（默认 2 秒监控，无限运行）
+# 运行（0.5 秒监控间隔，无限运行直至收到停止信号）
 python market_maker.py
 ```
 
 ## 环境变量 (.env)
 ```
 WALLET_PRIVATE_KEY=0x...
-LIMIT_ORDER_SYMBOL=BTC-USD
-LIMIT_ORDER_QTY=0.005
-LIMIT_ORDER_BPS=7.5
-LIMIT_ORDER_TOLERANCE_BPS=0.5       # 目标范围 7.0-8.0 bps
-MAX_ORDER_BPS=10                    # 硬阈值，超过必须重挂
-AUTO_CLOSE_ON_FILL=true             # 成交即平仓（释放保证金）
+
+# Market maker configuration
+MARKET_MAKER_SYMBOL=BTC-USD          # 交易对
+MARKET_MAKER_QTY=0.005               # 单笔订单数量
+MARKET_MAKER_TARGET_BPS=7.5          # 目标挂单偏离 (basis points)
+MARKET_MAKER_MIN_BPS=7.0             # 最小允许偏离，低于此值重挂
+MARKET_MAKER_MAX_BPS=10              # 最大允许偏离，超过此值重挂
 ```
 
-**成交即平仓机制**：
-- **启用（true）**：成交后立即市价平仓，只损失手续费（0.05%），释放保证金，可无限做市
-- **禁用（false）**：成交后直接补单，不平仓，保证金会被占用（保守策略）
+**参数说明**：
+- 初始下单时以 `target_bps` 为基准计算价格
+- 监控中如果实际偏离超出 [min_bps, max_bps] 范围，则取消所有订单并重新挂单
+- 示例：市价 100，则以 7.5 bps 挂单 → 买 99.925，卖 100.075
 
-## 运行模式配置
-默认无限运行。若需设置有限时长（如测试10分钟或跑24小时），可修改 [market_maker.py](market_maker.py#L403) 的 `main()` 调用：
-```python
-# 示例：运行10分钟
-market_maker.run(check_interval=2, duration=600)
+## 运行模式
+默认无限运行。策略会循环执行以下三步：
+1. **检查持仓**：若存在持仓则立即市价平仓
+2. **检查价格偏离**：买卖单偏离是否在 [min_bps, max_bps] 范围内
+3. **重挂订单**：若超出范围则取消所有订单，等待 1 秒，重新下双向单
 
-# 示例：运行24小时
-market_maker.run(check_interval=2, duration=86400)
-```
+每次检查间隔为 **0.5 秒**，可通过修改 [market_maker.py](market_maker.py#L403) 的 `market_maker.run(check_interval=0.5)` 调整。
 
-### 可选：崩溃自动重启
-使用外层循环守护，程序崩溃后自动重启：
-```bash
-while true; do python market_maker.py; sleep 2; done
-```
+### 优雅关闭
+程序支持 SIGTERM/SIGINT 信号，收到停止信号时会：
+1. 标记 `_shutdown_requested` 为 True
+2. 等待当前迭代完成
+3. 清理所有订单
+4. 优雅退出
 
 ### Ubuntu 生产环境部署（推荐）
 ```bash
@@ -95,16 +100,24 @@ tail -f run.log
 ```
 
 ## 已知行为与策略要点
-- 软阈值：偏离不在 [7.0, 8.0] bps 时重挂；硬阈值：>10 bps 必重挂。
-- 订单缺失（成交）会自动补单，不做平仓，只保持双边挂单。
-- 价格优先取 mark_price；接口失败会在下次迭代重试。
-- 时间同步很重要：请在服务器启用 `timedatectl set-ntp true`，否则可能触发签名过期 403。
-- `.env` 与私钥严禁入库，已在 [.gitignore](.gitignore) 中忽略。
+- 监控间隔 0.5 秒（可调整）；价格偏离超出 [min_bps, max_bps] 时重挂
+- 检测到持仓时立即市价平仓，保证不违反杠杆限制
+- 价格优先取 mark_price；接口失败会在下次迭代重试
+- 订单状态查询失败时使用上次缓存状态，不中断策略
+- 时间同步很重要：请在服务器启用 `timedatectl set-ntp true`，否则可能触发签名过期（403 错误）
+- `.env` 与私钥严禁入库，已在 [.gitignore](.gitignore) 中忽略
 
 ## 相关文件
-- 策略主体：[market_maker.py](market_maker.py)
-- 认证与 API 封装：[standx_auth.py](standx_auth.py)
-- 订单监控（可选辅助）：[order_monitor.py](order_monitor.py)
+- 做市主程序：[market_maker.py](market_maker.py)（430 行）
+  - 双向限价单管理、价格监控、订单调整
+- 认证与 HTTP 工具：[standx_auth.py](standx_auth.py)（308 行）
+  - EIP-191 + Ed25519 钱包认证
+  - `make_api_call()`：通用 HTTP 请求工具（支持重试）
+  - `_body_signature_headers()`：Ed25519 签名生成（用于有序 API）
+- API 方法库：[standx_api.py](standx_api.py)（190 行）
+  - 9 个函数：query_balance、query_symbol_price、query_positions
+  - 订单函数：new_limit_order、new_market_order、cancel_order
+  - 查询函数：query_order、query_open_orders、query_orders
 - 依赖列表：[requirements.txt](requirements.txt)
 
 ## 部署建议
