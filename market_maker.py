@@ -19,7 +19,8 @@ load_dotenv()
 class MarketMaker:
     """双向限价单做市器"""
     
-    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, min_bps: float = 7.0, max_bps: float = 10):
+    def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, min_bps: float = 7.0, max_bps: float = 10, 
+                 balance_threshold_1: float = 100.0, balance_threshold_2: float = 50.0):
         """
         初始化做市器
         
@@ -30,13 +31,29 @@ class MarketMaker:
             target_bps: 目标挂单偏离（basis points，默认7.5，用于初始下单）
             min_bps: 最小允许偏离（默认7.0，低于此值重新挂单）
             max_bps: 最大允许偏离（默认10，超过此值重新挂单）
+            balance_threshold_1: 余额阈值1-手续费容忍阈值（默认100 USDT，低于此进入降级模式1）
+            balance_threshold_2: 余额阈值2-止损阈值（默认50 USDT，低于此进入降级模式2）
         """
         self.auth = auth
         self.symbol = symbol
         self.qty = qty
+        
+        # 原始配置（正常模式）
+        self.default_target_bps = target_bps
+        self.default_min_bps = min_bps
+        self.default_max_bps = max_bps
+        
+        # 当前生效的配置（会根据余额动态调整）
         self.target_bps = target_bps
         self.min_bps = min_bps
         self.max_bps = max_bps
+        
+        # 余额降级阈值
+        self.balance_threshold_1 = balance_threshold_1
+        self.balance_threshold_2 = balance_threshold_2
+        
+        # 当前模式："normal", "degraded_1", "degraded_2"
+        self.current_mode = "normal"
         
         # 获取持仓配置
         positions = api.query_positions(auth, symbol=symbol)
@@ -60,6 +77,58 @@ class MarketMaker:
         
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
+    
+    def check_and_update_mode(self) -> bool:
+        """
+        检查余额并更新做市模式
+        
+        Returns:
+            True if mode changed, False otherwise
+        """
+        try:
+            balance_data = api.query_balance(self.auth)
+            total_balance = float(balance_data.get("total_balance", 0))
+            
+            old_mode = self.current_mode
+            
+            # 根据余额判断模式
+            if total_balance < self.balance_threshold_2:
+                # 降级模式2：止损模式（80 bps）
+                new_mode = "degraded_2"
+                self.target_bps = 80
+                self.min_bps = 70
+                self.max_bps = 95
+            elif total_balance < self.balance_threshold_1:
+                # 降级模式1：手续费容忍模式（25 bps）
+                new_mode = "degraded_1"
+                self.target_bps = 25
+                self.min_bps = 20
+                self.max_bps = 29.5
+            else:
+                # 正常模式：恢复默认配置
+                new_mode = "normal"
+                self.target_bps = self.default_target_bps
+                self.min_bps = self.default_min_bps
+                self.max_bps = self.default_max_bps
+            
+            # 模式变化时打印日志
+            if new_mode != old_mode:
+                self.current_mode = new_mode
+                mode_names = {
+                    "normal": "正常模式",
+                    "degraded_1": "降级模式1-手续费容忍",
+                    "degraded_2": "降级模式2-止损"
+                }
+                print(f"\n🔄 余额: {total_balance:.2f} USDT")
+                print(f"   模式切换: {mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}")
+                print(f"   新挂单策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"  ⚠️ 余额检查失败: {e}，使用当前模式继续")
+            return False
         
     def get_current_price(self) -> float:
         """获取当前市场价格（优先mark_price，因奖励资格基于mark_price计算）"""
@@ -307,10 +376,16 @@ class MarketMaker:
         print("=" * 60)
         print(f"交易对: {self.symbol}")
         print(f"订单数量: {self.qty}")
-        print(f"目标偏离: {self.target_bps} bps")
-        print(f"维护范围: [{self.min_bps}, {self.max_bps}] bps")
+        print(f"余额阈值1（手续费容忍）: {self.balance_threshold_1} USDT")
+        print(f"余额阈值2（止损）: {self.balance_threshold_2} USDT")
         print(f"检查间隔: {check_interval}秒")
         print("=" * 60)
+        
+        # 初始化：检查余额并确定模式
+        print(f"\n🔍 检查余额并确定运行模式...")
+        self.check_and_update_mode()
+        print(f"   当前模式: {self.current_mode}")
+        print(f"   挂单策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]")
         
         # 初始化：下双向订单
         market_price = self.get_current_price()
@@ -342,6 +417,17 @@ class MarketMaker:
                     continue
                 
                 print(f"\n[迭代 #{iteration}] 市价: {market_price:.2f} (运行时间: {int(elapsed)}秒)")
+                
+                # 每10次迭代检查一次余额并更新模式（避免频繁API调用）
+                if iteration % 10 == 0:
+                    mode_changed = self.check_and_update_mode()
+                    if mode_changed:
+                        # 模式切换后需要重新挂单
+                        print(f"   模式已切换，重新挂单...")
+                        self.cancel_all_orders()
+                        time.sleep(1)
+                        self.place_orders(market_price)
+                        continue
                 
                 # 显示当前订单状态
                 self.refresh_orders()
@@ -409,6 +495,10 @@ def main():
     min_bps = float(os.getenv("MARKET_MAKER_MIN_BPS", "7.0"))
     max_bps = float(os.getenv("MARKET_MAKER_MAX_BPS", "10"))
     
+    # 余额降级阈值
+    balance_threshold_1 = float(os.getenv("MARKET_MAKER_BALANCE_THRESHOLD_1", "100"))
+    balance_threshold_2 = float(os.getenv("MARKET_MAKER_BALANCE_THRESHOLD_2", "50"))
+    
     # 认证
     print("🔐 认证中...")
     auth = StandXAuth(private_key)
@@ -423,6 +513,8 @@ def main():
         target_bps=target_bps,
         min_bps=min_bps,
         max_bps=max_bps,
+        balance_threshold_1=balance_threshold_1,
+        balance_threshold_2=balance_threshold_2,
     )
     
     # 运行策略（0.5秒监控间隔）
