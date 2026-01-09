@@ -291,13 +291,12 @@ class MarketMaker:
             except Exception as e:
                 print(f"  ❌ 取消失败: {e}")
     
-    def run(self, check_interval: int = 10, duration: int = None):
+    def run(self, check_interval: float = 0.5):
         """
-        运行做市策略
+        运行做市策略（无限运行）
         
         Args:
-            check_interval: 检查间隔（秒）
-            duration: 运行时长（秒），None表示无限运行
+            check_interval: 检查间隔（秒，默认0.5秒）
         """
         print("=" * 60)
         print("双向限价单做市策略启动")
@@ -307,7 +306,6 @@ class MarketMaker:
         print(f"目标偏离: {self.target_bps} bps")
         print(f"维护范围: [{self.min_bps}, {self.max_bps}] bps")
         print(f"检查间隔: {check_interval}秒")
-        print(f"运行时长: {duration}秒" if duration else "运行时长: 无限")
         print("=" * 60)
         
         # 初始化：下双向订单
@@ -327,10 +325,6 @@ class MarketMaker:
                 # 检查是否收到关闭信号
                 if self._shutdown_requested:
                     print(f"\n⏰ 收到关闭信号，停止策略")
-                    break
-                
-                if duration and elapsed > duration:
-                    print(f"\n⏰ 运行时长达到 {duration}秒，停止策略")
                     break
                 
                 # 等待检查间隔
@@ -427,8 +421,8 @@ def main():
         max_bps=max_bps,
     )
     
-    # 运行策略（2秒监控间隔，默认无限运行）
-    market_maker.run(check_interval=2)
+    # 运行策略（0.5秒监控间隔）
+    market_maker.run(check_interval=0.5)
 
 
 if __name__ == "__main__":
