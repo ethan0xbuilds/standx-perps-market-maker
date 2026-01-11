@@ -4,16 +4,17 @@
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![Status](https://img.shields.io/badge/status-alpha-orange)
 
-简述：基于 StandX Perps (BSC) 的双向限价做市脚本，以 target_bps（默认 7.5）为中心挂单，维持价格偏离范围 [min_bps, max_bps]，超出时自动重挂；0.5 秒监控间隔，持续运行至收到停止信号。
+简述：基于 StandX Perps (BSC) 的双向限价做市脚本，以 target_bps（默认 7.5）为中心挂单，维持价格偏离范围 [min_bps, max_bps]，超出时自动重挂。支持 HTTP 轮询和 WebSocket 实时推送两种价格源。
 
 ## 功能概览
 
-- **三层架构**：
-  - [standx_auth.py](standx_auth.py)：钱包认证与 HTTP 工具（`make_api_call`、`_body_signature_headers`）
-  - [standx_api.py](standx_api.py)：API 方法库（9 个函数）
+- **核心模块**：
+  - [standx_auth.py](standx_auth.py)：钱包认证与 HTTP 工具
+  - [standx_api.py](standx_api.py)：HTTP API 方法库（9 个函数）
+  - [price_providers.py](price_providers.py)：价格数据源适配器（HTTP/WebSocket）
   - [market_maker.py](market_maker.py)：做市策略主程序
-- 做市策略：0.5 秒轮询监控，三步流程（检查持仓 → 检查价格偏离 → 重挂订单）
-- 价格源：优先使用 mark_price，保证奖励资格判定一致
+- 做市策略：可配置监控间隔，三步流程（检查持仓 → 检查价格偏离 → 重挂订单）
+- 价格获取：支持 HTTP 轮询和 WebSocket 实时推送两种模式
 - 容错：Timeout/ConnectionError/ProxyError 自动重试 3 次；订单刷新失败时使用上次缓存继续运行
 - 优雅关闭：支持 SIGTERM/SIGINT 信号处理，停止时自动取消所有订单
 
@@ -27,21 +28,22 @@
 
 ```bash
 # 克隆代码
-git clone https://github.com/ethan0xbuilds/standx-perps-market-maker.git && cd standx-perps-market-maker
-
-# 创建并激活虚拟环境
-python3.11 -m venv .venv
-source .venv/bin/activate
-
-# 安装依赖
-pip install -r requirements.txt
+git clone https://github.com/ethan0xbuilds/standx-perps-market-maker.git
+cd standx-perps-market-maker
 
 # 配置环境变量
 cp .env.example .env
 # 编辑 .env，填入私钥和参数
 
-# 运行（0.5 秒监控间隔，无限运行直至收到停止信号）
-python market_maker.py
+# 启动（自动安装依赖并后台运行）
+chmod +x run.sh stop.sh
+./run.sh
+
+# 监控日志
+tail -f logs/market_maker.log
+
+# 停止
+./stop.sh
 ```
 
 ## 环境变量 (.env)
@@ -59,17 +61,54 @@ MARKET_MAKER_MAX_BPS=10              # 最大允许偏离，超过此值重挂
 # Balance-based degradation (risk control)
 MARKET_MAKER_BALANCE_THRESHOLD_1=100  # 降级阈值1（单位：USDT）
 MARKET_MAKER_BALANCE_THRESHOLD_2=50   # 降级阈值2（单位：USDT）
+
+# 监控间隔（秒）
+MARKET_MAKER_CHECK_INTERVAL=0.0         # 价格监控间隔（0表示无延迟，默认0秒）
+
+# 价格数据源
+MARKET_MAKER_PRICE_SOURCE=http          # http: HTTP轮询 | websocket: WebSocket实时推送
 ```
 
-**参数说明**：
+## 价格数据源
 
-- 初始下单时以 `target_bps` 为基准计算价格
-- 监控中如果实际偏离超出 [min_bps, max_bps] 范围，则取消所有订单并重新挂单
-- 示例：市价 100，则以 7.5 bps 挂单 → 买 99.925，卖 100.075
+策略支持两种价格获取方式，通过 `MARKET_MAKER_PRICE_SOURCE` 参数切换：
+
+### HTTP 模式（默认）
+
+```env
+MARKET_MAKER_PRICE_SOURCE=http
+```
+
+- 每次循环通过 REST API 查询价格
+- 延迟：~140-520ms / 请求
+- 优点：稳定可靠，无需维护长连接
+- 适用：中低频策略，对延迟要求不高
+
+### WebSocket 模式（推荐）
+
+```env
+MARKET_MAKER_PRICE_SOURCE=websocket
+```
+
+- 建立持久连接，服务器实时推送价格
+- 延迟：~20-100ms（快 3-10 倍）
+- 优点：低延迟，低 CPU/带宽消耗
+- 适用：高频策略，tight bps 策略（如 7-10 bps）
+- 自动重连机制，连接断开会自动恢复
+
+### 性能对比
+
+| 指标 | HTTP 模式 | WebSocket 模式 |
+| ------ | ---------- | --------------- |
+| 价格更新延迟 | 140-520ms | 20-100ms |
+| CPU 消耗 | 高（频繁建立连接） | 低（保持单一连接） |
+| 带宽消耗 | 高（HTTP 头开销） | 低（无 HTTP 头） |
+| 实时性 | 取决于轮询间隔 | 几乎实时 |
+| 适用场景 | 稳定优先 | 速度优先 |
 
 ## 余额自动降级策略
 
-策略内置**三层风险控制机制**，根据实时余额自动切换运行模式。每 10 次迭代（约 5 秒）检查一次余额，若余额跨越阈值则自动调整挂单参数。
+策略内置**三层风险控制机制**，根据实时余额自动切换运行模式。每 10 次迭代检查一次余额，若余额跨越阈值则自动调整挂单参数。
 
 ### 运行模式对照表
 
@@ -113,15 +152,19 @@ MARKET_MAKER_BALANCE_THRESHOLD_2=50   # 降级阈值2（单位：USDT）
 - `BALANCE_THRESHOLD_1`：设置为你能接受的"开始谨慎做市"的余额门槛
 - `BALANCE_THRESHOLD_2`：设置为你的"止损红线"，低于此值则采用极端价差模式
 
-## 运行模式
+## 策略运行逻辑
 
-默认无限运行。策略会循环执行以下三步：
+策略持续运行，每次循环执行以下三步：
 
 1. **检查持仓**：若存在持仓则立即市价平仓
 2. **检查价格偏离**：买卖单偏离是否在 [min_bps, max_bps] 范围内
 3. **重挂订单**：若超出范围则取消所有订单，等待 1 秒，重新下双向单
 
-每次检查间隔为 **0.5 秒**，可通过修改 [market_maker.py](market_maker.py#L403) 的 `market_maker.run(check_interval=0.5)` 调整。
+检查间隔可通过 `MARKET_MAKER_CHECK_INTERVAL` 环境变量配置：
+
+- `0.0`：无人工延迟（推荐，依赖 API 调用本身的延迟）
+- `0.5`：500毫秒间隔
+- `1.0`：1秒间隔
 
 ### 优雅关闭
 
@@ -132,38 +175,9 @@ MARKET_MAKER_BALANCE_THRESHOLD_2=50   # 降级阈值2（单位：USDT）
 3. 清理所有订单
 4. 优雅退出
 
-### Ubuntu 生产环境部署（推荐）
-
-```bash
-# 1. 启动（后台运行 + 日志输出）
-chmod +x run.sh stop.sh
-./run.sh
-
-# 2. 监控日志
-tail -f logs/market_maker.log
-
-# 3. 停止
-./stop.sh
-```
-
-**启动脚本特性**：
-
-- 自动检测虚拟环境和配置文件
-- 防止重复启动
-- 日志实时写入 `logs/market_maker.log`
-- PID 管理，方便停止
-
-### 手动后台运行
-
-```bash
-nohup python -u market_maker.py >> run.log 2>&1 &
-# 观察日志
-tail -f run.log
-```
-
 ## 已知行为与策略要点
 
-- 监控间隔 0.5 秒（可调整）；价格偏离超出 [min_bps, max_bps] 时重挂
+- 检查间隔可配置（默认 0 秒）；价格偏离超出 [min_bps, max_bps] 时重挂
 - 检测到持仓时立即市价平仓，保证不违反杠杆限制
 - 价格优先取 mark_price；接口失败会在下次迭代重试
 - 订单状态查询失败时使用上次缓存状态，不中断策略
@@ -172,7 +186,7 @@ tail -f run.log
 
 ## 相关文件
 
-- 做市主程序：[market_maker.py](market_maker.py)（430 行）
+- 做市主程序：[market_maker.py](market_maker.py)（540 行）
   - 双向限价单管理、价格监控、订单调整
 - 认证与 HTTP 工具：[standx_auth.py](standx_auth.py)（308 行）
   - EIP-191 + Ed25519 钱包认证
@@ -182,12 +196,12 @@ tail -f run.log
   - 9 个函数：query_balance、query_symbol_price、query_positions
   - 订单函数：new_limit_order、new_market_order、cancel_order
   - 查询函数：query_order、query_open_orders、query_orders
+- 价格数据源：[price_providers.py](price_providers.py)（233 行）
+  - PriceProvider 抽象接口
+  - HttpPriceProvider：通过 REST API 获取价格
+  - WebSocketPriceProvider：通过 WebSocket 实时推送
+  - 工厂函数：create_price_provider()
 - 依赖列表：[requirements.txt](requirements.txt)
-
-## 部署建议
-
-- 部署时手工同步 `.env`。
-- 出错时先看日志中的网络错误与时间同步；必要时重启脚本或重新获取时间。
 
 ## License
 
