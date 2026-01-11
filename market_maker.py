@@ -12,6 +12,7 @@ import signal
 from dotenv import load_dotenv
 from standx_auth import StandXAuth
 import standx_api as api
+from price_providers import create_price_provider, PriceProvider
 
 load_dotenv()
 
@@ -20,7 +21,7 @@ class MarketMaker:
     """双向限价单做市器"""
     
     def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, min_bps: float = 7.0, max_bps: float = 10, 
-                 balance_threshold_1: float = 100.0, balance_threshold_2: float = 50.0):
+                 balance_threshold_1: float = 100.0, balance_threshold_2: float = 50.0, price_source: str = "http"):
         """
         初始化做市器
         
@@ -33,10 +34,15 @@ class MarketMaker:
             max_bps: 最大允许偏离（默认10，超过此值重新挂单）
             balance_threshold_1: 余额阈值1-手续费容忍阈值（默认100 USDT，低于此进入降级模式1）
             balance_threshold_2: 余额阈值2-止损阈值（默认50 USDT，低于此进入降级模式2）
+            price_source: 价格数据源（"http" 或 "websocket"，默认 "http"）
         """
         self.auth = auth
         self.symbol = symbol
         self.qty = qty
+        
+        # 创建价格提供者
+        self.price_provider = create_price_provider(price_source, auth, symbol)
+        self.price_source = price_source
         
         # 原始配置（正常模式）
         self.default_target_bps = target_bps
@@ -135,15 +141,9 @@ class MarketMaker:
             return False
         
     def get_current_price(self) -> float:
-        """获取当前市场价格（优先mark_price，因奖励资格基于mark_price计算）"""
+        """获取当前市场价格（通过配置的价格提供者）"""
         try:
-            price_data = api.query_symbol_price(self.auth, self.symbol)
-            mark_price = price_data.get("mark_price")
-            mid_price = price_data.get("mid_price")
-            price = float(mark_price or mid_price)
-            if not price or price <= 0:
-                raise ValueError(f"Invalid price: {price}")
-            return price
+            return self.price_provider.get_current_price()
         except Exception as e:
             print(f"  ⚠️ 获取价格失败: {e}，将在下次迭代重试")
             raise
@@ -380,6 +380,7 @@ class MarketMaker:
         print("=" * 60)
         print(f"交易对: {self.symbol}")
         print(f"订单数量: {self.qty}")
+        print(f"价格数据源: {self.price_source.upper()}")
         print(f"余额阈值1（手续费容忍）: {self.balance_threshold_1} USDT")
         print(f"余额阈值2（止损）: {self.balance_threshold_2} USDT")
         print(f"检查间隔: {check_interval}秒")
@@ -471,7 +472,7 @@ class MarketMaker:
         print("=" * 60)
     
     def cleanup(self):
-        """清理所有订单"""
+        """清理所有订单和资源"""
         self.refresh_orders()
         orders_to_cancel = []
         
@@ -486,6 +487,9 @@ class MarketMaker:
                 print(f"  ✅ 取消 {order['side']} 订单: {order['cl_ord_id']}")
             except Exception as e:
                 print(f"  ❌ 取消失败: {e}")
+        
+        # 清理价格提供者资源（如 WebSocket 连接）
+        self.price_provider.cleanup()
 
 
 def main():
@@ -506,6 +510,9 @@ def main():
     # 监控间隔
     check_interval = float(os.getenv("MARKET_MAKER_CHECK_INTERVAL", "0.0"))
     
+    # 价格数据源
+    price_source = os.getenv("MARKET_MAKER_PRICE_SOURCE", "http").lower()
+    
     # 认证
     print("🔐 认证中...")
     auth = StandXAuth(private_key)
@@ -522,6 +529,7 @@ def main():
         max_bps=max_bps,
         balance_threshold_1=balance_threshold_1,
         balance_threshold_2=balance_threshold_2,
+        price_source=price_source,
     )
     
     # 运行策略
