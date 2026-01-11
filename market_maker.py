@@ -503,6 +503,9 @@ def main():
     balance_threshold_1 = float(os.getenv("MARKET_MAKER_BALANCE_THRESHOLD_1", "100"))
     balance_threshold_2 = float(os.getenv("MARKET_MAKER_BALANCE_THRESHOLD_2", "50"))
     
+    # 监控间隔
+    check_interval = float(os.getenv("MARKET_MAKER_CHECK_INTERVAL", "0.0"))
+    
     # 认证
     print("🔐 认证中...")
     auth = StandXAuth(private_key)
@@ -521,8 +524,8 @@ def main():
         balance_threshold_2=balance_threshold_2,
     )
     
-    # 运行策略（0.5秒监控间隔）
-    market_maker.run(check_interval=0.5)
+    # 运行策略
+    market_maker.run(check_interval=check_interval)
 
 
 if __name__ == "__main__":
