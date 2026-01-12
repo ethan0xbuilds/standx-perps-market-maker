@@ -29,8 +29,8 @@
 ### 1. 安装依赖
 
 ```bash
-# Ubuntu 安装 cpulimit
-sudo apt-get update && sudo apt-get install -y cpulimit python3-venv
+# Ubuntu 安装 Python 虚拟环境
+sudo apt-get update && sudo apt-get install -y python3-venv
 ```
 
 ### 2. 克隆代码并配置
@@ -68,6 +68,19 @@ User=root
 WorkingDirectory=/root/standx
 ExecStart=/root/standx/run.sh
 ExecStop=/root/standx/stop.sh
+# --- 资源限制开始 ---
+# 限制 CPU 使用率为单核的 35%
+CPUQuota=35%
+# 内存使用达到 500M 时，系统会尝试回收内存页，进程仍可运行但性能可能受限
+MemoryHigh=500M
+# 内存硬上限 800M，超过此值系统将直接 Kill 进程（保护节点不重启）
+MemoryMax=800M
+# 限制该服务及其子进程的总线程/进程数
+TasksMax=50
+# 禁止使用 Swap 交换分区，确保内存使用的确定性（可选，推荐）
+MemorySwapMax=0
+# --- 资源限制结束 ---
+
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
