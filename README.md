@@ -26,24 +26,77 @@
 
 ## 安装与运行
 
+### 1. 安装依赖
+
 ```bash
-# 克隆代码
-git clone https://github.com/ethan0xbuilds/standx-perps-market-maker.git
-cd standx-perps-market-maker
+# Ubuntu 安装 cpulimit
+sudo apt-get update && sudo apt-get install -y cpulimit python3-venv
+```
+
+### 2. 克隆代码并配置
+
+```bash
+# 克隆到 /root/standx
+git clone https://github.com/ethan0xbuilds/standx-perps-market-maker.git /root/standx
+cd /root/standx
+
+# 设置脚本权限
+chmod +x run.sh stop.sh
 
 # 配置环境变量
 cp .env.example .env
 # 编辑 .env，填入私钥和参数
 
-# 启动（自动安装依赖并后台运行）
-chmod +x run.sh stop.sh
-./run.sh
+# 安装 Python 依赖
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-# 监控日志
-tail -f logs/market_maker.log
+### 3. 部署为 systemd 服务
 
-# 停止
-./stop.sh
+创建服务文件 `/etc/systemd/system/standx-market-maker.service`：
+
+```ini
+[Unit]
+Description=StandX Market Maker
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/standx
+ExecStart=/root/standx/run.sh
+ExecStop=/root/standx/stop.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 4. 启动并管理服务
+
+```bash
+# 重载配置并启用开机自启
+sudo systemctl daemon-reload
+sudo systemctl enable standx-market-maker
+
+# 启动服务
+sudo systemctl start standx-market-maker
+
+# 查看状态
+sudo systemctl status standx-market-maker
+
+# 查看日志
+sudo journalctl -u standx-market-maker -f
+tail -f /root/standx/logs/market_maker.log
+
+# 停止/重启服务
+sudo systemctl stop standx-market-maker
+sudo systemctl restart standx-market-maker
 ```
 
 ## 环境变量 (.env)
