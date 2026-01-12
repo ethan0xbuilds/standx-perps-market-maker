@@ -9,6 +9,8 @@ import os
 import sys
 import time
 import signal
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from standx_auth import StandXAuth
 import standx_api as api
@@ -21,7 +23,8 @@ class MarketMaker:
     """双向限价单做市器"""
     
     def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, min_bps: float = 7.0, max_bps: float = 10, 
-                 balance_threshold_1: float = 100.0, balance_threshold_2: float = 50.0, price_source: str = "http"):
+                 balance_threshold_1: float = 100.0, balance_threshold_2: float = 50.0, price_source: str = "http", 
+                 force_degraded_on_us_open: bool = False):
         """
         初始化做市器
         
@@ -35,6 +38,7 @@ class MarketMaker:
             balance_threshold_1: 余额阈值1-手续费容忍阈值（默认100 USDT，低于此进入降级模式1）
             balance_threshold_2: 余额阈值2-止损阈值（默认50 USDT，低于此进入降级模式2）
             price_source: 价格数据源（"http" 或 "websocket"，默认 "http"）
+            force_degraded_on_us_open: 美股开盘时间是否强制降级模式2（默认False）
         """
         self.auth = auth
         self.symbol = symbol
@@ -57,6 +61,9 @@ class MarketMaker:
         # 余额降级阈值
         self.balance_threshold_1 = balance_threshold_1
         self.balance_threshold_2 = balance_threshold_2
+        
+        # 美股开盘时段强制降级开关
+        self.force_degraded_on_us_open = force_degraded_on_us_open
         
         # 当前模式："normal", "degraded_1", "degraded_2"
         self.current_mode = "normal"
@@ -84,42 +91,71 @@ class MarketMaker:
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
     
+    def _is_us_market_open(self) -> bool:
+        """判断当前是否美股开盘时间（美东时间 09:30-16:00，周一-周五）"""
+        try:
+            # 获取美东时间（EST/EDT，自动处理冬夏令时）
+            eastern = ZoneInfo("America/New_York")
+            now = datetime.now(eastern)
+            
+            # 检查是否工作日（0=周一，6=周日）
+            if now.weekday() >= 5:  # 周六、周日
+                return False
+            
+            # 检查是否在 09:30-16:00 之间
+            market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+            market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+            
+            return market_open <= now < market_close
+        except Exception as e:
+            print(f"  ⚠️ 美股开盘时间判断失败: {e}")
+            return False
+    
     def check_and_update_mode(self) -> bool:
         """
         检查余额并更新做市模式
+        优先检查美股开盘时段，其次检查余额
         
         Returns:
             True if mode changed, False otherwise
         """
         try:
-            balance_data = api.query_balance(self.auth)
-            # Debug: print actual response to verify field names
-            print(f"  🔍 余额查询响应: {balance_data}")
-            
-            # 优先使用 'balance' 字段（总余额），备用 'equity'
-            total_balance = float(balance_data.get("balance") or balance_data.get("equity") or 0)
-            
             old_mode = self.current_mode
+            reason = ""
+            new_mode = "normal"
             
-            # 根据余额判断模式
-            if total_balance < self.balance_threshold_2:
-                # 降级模式2：止损模式（80 bps）
+            # 第1步：优先检查美股开盘时段（如果启用）
+            if self.force_degraded_on_us_open and self._is_us_market_open():
                 new_mode = "degraded_2"
                 self.target_bps = 80
                 self.min_bps = 70
                 self.max_bps = 95
-            elif total_balance < self.balance_threshold_1:
-                # 降级模式1：手续费容忍模式（25 bps）
-                new_mode = "degraded_1"
-                self.target_bps = 25
-                self.min_bps = 20
-                self.max_bps = 29.5
+                reason = "美股开盘时段（09:30-16:00 美东时间）"
             else:
-                # 正常模式：恢复默认配置
-                new_mode = "normal"
-                self.target_bps = self.default_target_bps
-                self.min_bps = self.default_min_bps
-                self.max_bps = self.default_max_bps
+                # 第2步：检查余额判断模式
+                balance_data = api.query_balance(self.auth)
+                print(f"  🔍 余额查询响应: {balance_data}")
+                
+                total_balance = float(balance_data.get("balance") or balance_data.get("equity") or 0)
+                
+                if total_balance < self.balance_threshold_2:
+                    new_mode = "degraded_2"
+                    self.target_bps = 80
+                    self.min_bps = 70
+                    self.max_bps = 95
+                    reason = f"余额过低: {total_balance:.2f} USDT"
+                elif total_balance < self.balance_threshold_1:
+                    new_mode = "degraded_1"
+                    self.target_bps = 25
+                    self.min_bps = 20
+                    self.max_bps = 29.5
+                    reason = f"余额偏低: {total_balance:.2f} USDT"
+                else:
+                    new_mode = "normal"
+                    self.target_bps = self.default_target_bps
+                    self.min_bps = self.default_min_bps
+                    self.max_bps = self.default_max_bps
+                    reason = f"余额充足: {total_balance:.2f} USDT"
             
             # 模式变化时打印日志
             if new_mode != old_mode:
@@ -129,15 +165,15 @@ class MarketMaker:
                     "degraded_1": "降级模式1-手续费容忍",
                     "degraded_2": "降级模式2-止损"
                 }
-                print(f"\n🔄 余额: {total_balance:.2f} USDT")
-                print(f"   模式切换: {mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}")
+                print(f"\n🔄 模式切换: {mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}")
+                print(f"   原因: {reason}")
                 print(f"   新挂单策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]")
                 return True
             
             return False
             
         except Exception as e:
-            print(f"  ⚠️ 余额检查失败: {e}，使用当前模式继续")
+            print(f"  ⚠️ 模式更新失败: {e}，使用当前模式继续")
             return False
         
     def get_current_price(self) -> float:
@@ -513,6 +549,9 @@ def main():
     # 价格数据源
     price_source = os.getenv("MARKET_MAKER_PRICE_SOURCE", "http").lower()
     
+    # 美股开盘时段强制降级
+    force_degraded_on_us_open = os.getenv("MARKET_MAKER_FORCE_DEGRADED_ON_US_OPEN", "false").lower() == "true"
+    
     # 认证
     print("🔐 认证中...")
     auth = StandXAuth(private_key)
@@ -530,6 +569,7 @@ def main():
         balance_threshold_1=balance_threshold_1,
         balance_threshold_2=balance_threshold_2,
         price_source=price_source,
+        force_degraded_on_us_open=force_degraded_on_us_open,
     )
     
     # 运行策略
