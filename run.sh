@@ -24,6 +24,6 @@ pgrep -f "python.*market_maker.py" > /dev/null && {
 
 # 启动（cpulimit 70%）
 echo "🚀 启动 Market Maker (CPU限制: 70%)..."
-nohup cpulimit -l 70 python -u market_maker.py >> "$LOG_FILE" 2>&1 &
+nohup cpulimit -l 70 -- python -u market_maker.py >> "$LOG_FILE" 2>&1 &
 echo "✅ 已启动 PID: $!"
 echo "   日志: tail -f $LOG_FILE"
