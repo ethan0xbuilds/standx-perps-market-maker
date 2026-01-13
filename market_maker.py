@@ -165,7 +165,9 @@ class MarketMaker:
                     "degraded_1": "降级模式1-手续费容忍",
                     "degraded_2": "降级模式2-止损"
                 }
-                print(f"\n🔄 模式切换: {mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}")
+                beijing_tz = ZoneInfo("Asia/Shanghai")
+                beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
+                print(f"\n🔄 模式切换 [{beijing_time}]: {mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}")
                 print(f"   原因: {reason}")
                 print(f"   新挂单策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]")
                 return True
@@ -411,8 +413,10 @@ class MarketMaker:
         Args:
             check_interval: 检查间隔（秒，默认0.5秒）
         """
+        beijing_tz = ZoneInfo("Asia/Shanghai")
+        beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
         print("=" * 60)
-        print("双向限价单做市策略启动")
+        print(f"双向限价单做市策略启动 - {beijing_time}")
         print("=" * 60)
         print(f"交易对: {self.symbol}")
         print(f"订单数量: {self.qty}")
@@ -428,20 +432,9 @@ class MarketMaker:
         print(f"   当前模式: {self.current_mode}")
         print(f"   挂单策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]")
         
-        # 初始化：下双向订单
-        market_price = self.get_current_price()
-        print(f"\n📊 当前市价: {market_price:.2f}")
-        self.place_orders(market_price)
-        
         # 监控循环
-        start_time = time.time()
-        iteration = 0
-        
         try:
             while True:
-                iteration += 1
-                elapsed = time.time() - start_time
-                
                 # 检查是否收到关闭信号
                 if self._shutdown_requested:
                     print(f"\n⏰ 收到关闭信号，停止策略")
@@ -457,40 +450,62 @@ class MarketMaker:
                     print(f"  ⚠️ 跳过本次迭代，继续监控...")
                     continue
                 
-                print(f"\n[迭代 #{iteration}] 市价: {market_price:.2f} (运行时间: {int(elapsed)}秒)")
+                # 获取北京时间
+                beijing_tz = ZoneInfo("Asia/Shanghai")
+                beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
                 
-                # 每10次迭代检查一次余额并更新模式（避免频繁API调用）
-                if iteration % 10 == 0:
-                    mode_changed = self.check_and_update_mode()
-                    if mode_changed:
-                        # 模式切换后需要重新挂单
-                        print(f"   模式已切换，重新挂单...")
-                        self.cancel_all_orders()
-                        time.sleep(1)
-                        self.place_orders(market_price)
+                print(f"\n市价: {market_price:.2f} (北京时间: {beijing_time})")
+                
+                # 第1步：检查持仓，存在则平仓
+                positions = api.query_positions(self.auth, symbol=self.symbol)
+                if positions:
+                    position = positions[0]
+                    qty = position.get("qty")
+                    if qty and float(qty) != 0:
+                        print(f"\n💰 检测到持仓 (qty={qty})，立即平仓...")
+                        try:
+                            self.close_position(market_price)
+                            # 平仓后检查余额并更新模式
+                            self.check_and_update_mode()
+                        except Exception as e:
+                            print(f"  ⚠️ 平仓失败: {e}，下次迭代重试...")
                         continue
                 
-                # 显示当前订单状态
+                # 第2步：检查订单状态和偏离度
                 self.refresh_orders()
-                if self.buy_order:
+                need_replace = False
+                reason = ""
+                
+                # 检查买单
+                if not self.buy_order:
+                    need_replace = True
+                    reason = "缺少买单"
+                else:
                     buy_price = float(self.buy_order["price"])
                     buy_bps = abs((market_price - buy_price) / market_price * 10000)
                     print(f"  📗 买单: {buy_price:.2f} (偏离: {buy_bps:.1f} bps)")
-                else:
-                    print(f"  ⚠️ 无买单")
+                    if buy_bps < self.min_bps or buy_bps > self.max_bps:
+                        need_replace = True
+                        reason = f"买单偏离范围: {buy_bps:.1f} bps 不在 [{self.min_bps}, {self.max_bps}]"
                 
-                if self.sell_order:
+                # 检查卖单
+                if not self.sell_order:
+                    need_replace = True
+                    reason = "缺少卖单" if not need_replace else reason
+                else:
                     sell_price = float(self.sell_order["price"])
                     sell_bps = abs((sell_price - market_price) / market_price * 10000)
                     print(f"  📕 卖单: {sell_price:.2f} (偏离: {sell_bps:.1f} bps)")
-                else:
-                    print(f"  ⚠️ 无卖单")
+                    if sell_bps < self.min_bps or sell_bps > self.max_bps:
+                        need_replace = True
+                        reason = f"卖单偏离范围: {sell_bps:.1f} bps 不在 [{self.min_bps}, {self.max_bps}]" if not need_replace else reason
                 
-                # 检查并调整订单（容错处理）
-                try:
-                    self.check_and_adjust_orders(market_price)
-                except Exception as e:
-                    print(f"  ⚠️ 调整订单失败: {e}，下次迭代重试...")
+                # 如果需要重新下单
+                if need_replace:
+                    print(f"\n🚨 {reason}，取消所有订单并重新挂单...")
+                    self.cancel_all_orders()
+                    time.sleep(1)
+                    self.place_orders(market_price)
                     continue
                 
         except KeyboardInterrupt:
