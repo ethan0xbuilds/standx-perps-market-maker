@@ -92,7 +92,7 @@ class MarketMaker:
         signal.signal(signal.SIGINT, handle_signal)
     
     def _is_us_market_open(self) -> bool:
-        """判断当前是否美股开盘时间（美东时间 09:30-16:00，周一-周五）"""
+        """判断当前是否美股开盘时间（美东时间 09:30-16:15，周一-周五，包含收盘后15分钟缓冲）"""
         try:
             # 获取美东时间（EST/EDT，自动处理冬夏令时）
             eastern = ZoneInfo("America/New_York")
@@ -102,9 +102,9 @@ class MarketMaker:
             if now.weekday() >= 5:  # 周六、周日
                 return False
             
-            # 检查是否在 09:30-16:00 之间
+            # 检查是否在 09:30-16:15 之间（包含收盘后15分钟缓冲，应对BTC波动）
             market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-            market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+            market_close = now.replace(hour=16, minute=15, second=0, microsecond=0)
             
             return market_open <= now < market_close
         except Exception as e:
