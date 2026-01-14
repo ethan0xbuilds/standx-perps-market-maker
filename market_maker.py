@@ -386,6 +386,7 @@ class MarketMaker:
             print(f"   取消所有订单并重新挂...")
             self.cancel_all_orders()
             time.sleep(1)
+            self.check_and_update_mode()
             self.place_orders(market_price)
             return True
         
@@ -505,6 +506,7 @@ class MarketMaker:
                     print(f"\n🚨 {reason}，取消所有订单并重新挂单...")
                     self.cancel_all_orders()
                     time.sleep(1)
+                    self.check_and_update_mode()
                     self.place_orders(market_price)
                     continue
                 
