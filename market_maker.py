@@ -339,59 +339,6 @@ class MarketMaker:
             print(f"  ⚠️ 刷新订单状态失败: {e}")
             # 不抛出异常，使用上次缓存的订单状态
     
-    def check_and_adjust_orders(self, market_price: float) -> bool:
-        """
-        检查订单是否需要调整（简化逻辑）
-        
-        1. 检查持仓，存在则立即平仓
-        2. 检查订单偏离，任一方超出[min_bps, max_bps]则取消所有订单并重挂
-        
-        Args:
-            market_price: 当前市场价格
-            
-        Returns:
-            True if orders were adjusted, False otherwise
-        """
-        self.refresh_orders()
-        
-        # 第1步：检查持仓，存在则平仓
-        positions = api.query_positions(self.auth, symbol=self.symbol)
-        if positions:
-            position = positions[0]
-            qty = position.get("qty")
-            if qty and float(qty) != 0:
-                print(f"\n💰 检测到持仓 (qty={qty})，立即平仓...")
-                self.close_position(market_price)
-        
-        # 第2步：检查买单和卖单偏离
-        need_rehang = False
-        
-        if self.buy_order:
-            buy_price = float(self.buy_order["price"])
-            buy_bps = abs((market_price - buy_price) / market_price * 10000)
-            
-            if buy_bps < self.min_bps or buy_bps > self.max_bps:
-                print(f"\n🚨 买单偏离范围: {buy_bps:.1f} bps 不在 [{self.min_bps}, {self.max_bps}]")
-                need_rehang = True
-        
-        if self.sell_order:
-            sell_price = float(self.sell_order["price"])
-            sell_bps = abs((sell_price - market_price) / market_price * 10000)
-            
-            if sell_bps < self.min_bps or sell_bps > self.max_bps:
-                print(f"\n🚨 卖单偏离范围: {sell_bps:.1f} bps 不在 [{self.min_bps}, {self.max_bps}]")
-                need_rehang = True
-        
-        if need_rehang:
-            print(f"   取消所有订单并重新挂...")
-            self.cancel_all_orders()
-            time.sleep(1)
-            self.check_and_update_mode()
-            self.place_orders(market_price)
-            return True
-        
-        return False
-    
     def cancel_all_orders(self):
         """取消所有订单"""
         orders_to_cancel = []
