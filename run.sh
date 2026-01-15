@@ -9,6 +9,10 @@ cd "$(dirname "$0")"
 source .venv/bin/activate
 mkdir -p logs
 
+# 安装依赖（确保运行时依赖完整）
+echo "📦 安装依赖..."
+.venv/bin/python -m pip install -r requirements.txt >/dev/null || { echo "❌ 依赖安装失败"; exit 1; }
+
 LOG_FILE="logs/market_maker.log"
 
 # 日志轮转
@@ -24,4 +28,4 @@ pgrep -f "python.*market_maker.py" > /dev/null && {
 
 # 启动（前台运行供 systemd 管理）
 echo "🚀 启动 Market Maker..."
-exec python -u market_maker.py 2>&1 | tee -a "$LOG_FILE"
+exec .venv/bin/python -u market_maker.py 2>&1 | tee -a "$LOG_FILE"

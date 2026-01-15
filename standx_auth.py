@@ -14,7 +14,7 @@ from functools import wraps
 from dotenv import load_dotenv
 from eth_account import Account
 from eth_account.messages import encode_defunct
-from base58 import b58encode
+from base58 import b58encode, b58decode
 from nacl.signing import SigningKey
 
 # API endpoints
@@ -61,19 +61,29 @@ def retry_on_network_error(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
 class StandXAuth:
     """Handle StandX authentication flow for BSC"""
     
-    def __init__(self, private_key: str):
+    def __init__(self, private_key: str, ed25519_key: str, token: str = None):
         """
-        Initialize with wallet private key
+        Initialize with wallet private key and Ed25519 key
         
         Args:
             private_key: Wallet private key with 0x prefix (e.g., 0x123...)
+            ed25519_key: Ed25519 private key from StandX (44-char base58 string)
+            token: Optional access token. If provided, authentication flow is skipped.
         """
         self.private_key = private_key
         self.account = Account.from_key(private_key)
         self.wallet_address = self.account.address
-        self.token = None
-        # Generate ephemeral ed25519 keypair; public key (base58) is used as requestId
-        self.ed25519_signing_key = SigningKey.generate()
+        self.token = token
+        
+        # Load Ed25519 signing key from base58 string
+        try:
+            seed_bytes = b58decode(ed25519_key)
+            if len(seed_bytes) != 32:
+                raise ValueError(f"Ed25519 seed must be 32 bytes, got {len(seed_bytes)}")
+            self.ed25519_signing_key = SigningKey(seed_bytes)
+        except Exception as e:
+            raise ValueError(f"ED25519_PRIVATE_KEY 格式错误，必须是 44 字符的 base58 编码字符串: {e}")
+        
         self.request_id = b58encode(self.ed25519_signing_key.verify_key.encode()).decode()
         
     @retry_on_network_error()
@@ -223,6 +233,7 @@ class StandXAuth:
                 raise Exception(f"Login failed: {data}")
             
             self.token = data.get("token")
+            print(f"✓ Received access token: {self.token}...")
             
             print(f"✓ Successfully authenticated!")
             print(f"  - Address: {data.get('address')}")
@@ -237,11 +248,21 @@ class StandXAuth:
     
     def authenticate(self) -> dict:
         """
-        Execute full authentication flow
+        Execute full authentication flow or use pre-provided token
         
         Returns:
             Dictionary with authentication response including access token
         """
+        # If token was provided at initialization, skip authentication
+        if self.token:
+            print(f"\n{'='*60}")
+            print(f"StandX Authentication (BSC)")
+            print(f"Wallet: {self.wallet_address}")
+            print(f"✓ Using provided access token")
+            print(f"Access Token: {self.token[:50]}...")
+            print(f"{'='*60}\n")
+            return {"token": self.token}
+        
         print(f"\n{'='*60}")
         print(f"StandX Authentication Flow (BSC)")
         print(f"Wallet: {self.wallet_address}")
@@ -356,15 +377,23 @@ def main():
     
     # Get private key from environment
     private_key = os.getenv("WALLET_PRIVATE_KEY")
-    
+    ed25519_key = os.getenv("ED25519_PRIVATE_KEY")
+    token = os.getenv("ACCESS_TOKEN")  # Optional pre-provided token
+
     if not private_key:
         raise ValueError(
             "WALLET_PRIVATE_KEY not found in .env file. "
             "Please set your wallet private key."
         )
     
+    if not ed25519_key:
+        raise ValueError(
+            "ED25519_PRIVATE_KEY not found in .env file. "
+            "Please set your Ed25519 private key from StandX platform."
+        )
+    
     # Initialize authentication
-    auth = StandXAuth(private_key)
+    auth = StandXAuth(private_key, ed25519_key, token=token)
     
     # Authenticate and get token
     auth_response = auth.authenticate()

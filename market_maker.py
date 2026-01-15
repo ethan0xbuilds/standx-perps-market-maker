@@ -497,6 +497,7 @@ def main():
     
     # 加载配置
     private_key = os.getenv("WALLET_PRIVATE_KEY")
+    ed25519_key = os.getenv("ED25519_PRIVATE_KEY")
     symbol = os.getenv("MARKET_MAKER_SYMBOL", "BTC-USD")
     qty = os.getenv("MARKET_MAKER_QTY", "0.005")
     target_bps = float(os.getenv("MARKET_MAKER_TARGET_BPS", "7.5"))
@@ -518,7 +519,8 @@ def main():
     
     # 认证
     print("🔐 认证中...")
-    auth = StandXAuth(private_key)
+    token = os.getenv("ACCESS_TOKEN")  # Optional pre-provided token
+    auth = StandXAuth(private_key, ed25519_key, token=token)
     auth.authenticate()
     print("✅ 认证成功\n")
     
