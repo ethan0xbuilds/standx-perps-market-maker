@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from standx_auth import StandXAuth
 import standx_api as api
 from price_providers import create_price_provider, PriceProvider
+from notifier import Notifier
 
 load_dotenv()
 
@@ -24,7 +25,7 @@ class MarketMaker:
     
     def __init__(self, auth: StandXAuth, symbol: str, qty: str, target_bps: float = 7.5, min_bps: float = 7.0, max_bps: float = 10, 
                  balance_threshold_1: float = 100.0, balance_threshold_2: float = 50.0, price_source: str = "http", 
-                 force_degraded_on_us_open: bool = False):
+                 force_degraded_on_us_open: bool = False, notifier: Notifier = None):
         """
         初始化做市器
         
@@ -39,10 +40,14 @@ class MarketMaker:
             balance_threshold_2: 余额阈值2-止损阈值（默认50 USDT，低于此进入降级模式2）
             price_source: 价格数据源（"http" 或 "websocket"，默认 "http"）
             force_degraded_on_us_open: 美股开盘时间是否强制降级模式2（默认False）
+            notifier: 通知器实例（可选，默认从环境变量创建）
         """
         self.auth = auth
         self.symbol = symbol
         self.qty = qty
+        
+        # 通知器
+        self.notifier = notifier or Notifier.from_env()
         
         # 创建价格提供者
         self.price_provider = create_price_provider(price_source, auth, symbol)
@@ -77,6 +82,10 @@ class MarketMaker:
         # 当前订单
         self.buy_order = None
         self.sell_order = None
+        
+        # 订单重挂通知限流（5分钟窗口）
+        self._last_reorder_notify_time = 0
+        self._reorder_count_since_notify = 0
         
         # 优雅关闭相关
         self._shutdown_requested = False
@@ -157,7 +166,7 @@ class MarketMaker:
                     self.max_bps = self.default_max_bps
                     reason = f"余额充足: {total_balance:.2f} USDT"
             
-            # 模式变化时打印日志
+            # 模式变化时打印日志并通知
             if new_mode != old_mode:
                 self.current_mode = new_mode
                 mode_names = {
@@ -170,6 +179,17 @@ class MarketMaker:
                 print(f"\n🔄 模式切换 [{beijing_time}]: {mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}")
                 print(f"   原因: {reason}")
                 print(f"   新挂单策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]")
+                
+                # 发送通知
+                notify_msg = (
+                    f"🔄 *模式切换* [{beijing_time}]\n"
+                    f"交易对: `{self.symbol}`\n"
+                    f"{mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}\n\n"
+                    f"原因: {reason}\n"
+                    f"新策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]"
+                )
+                self.notifier.send(notify_msg)
+                
                 return True
             
             return False
@@ -255,12 +275,32 @@ class MarketMaker:
                 latest_qty = float(latest_positions[0].get("qty") or 0)
                 if latest_qty == 0:
                     print("  ✅ 持仓数量为 0（已平仓）")
+                    # 平仓成功通知
+                    self.notifier.send(
+                        f"✅ *平仓成功*\n"
+                        f"交易对: `{self.symbol}`\n"
+                        f"数量: {qty_str}\n"
+                        f"方向: {close_side}"
+                    )
                     return True
             
             print("  ⚠️ 超时：持仓仍未归零，稍后会在下一轮重试")
+            # 平仓超时通知
+            self.notifier.send(
+                f"⚠️ *平仓超时*\n"
+                f"交易对: `{self.symbol}`\n"
+                f"数量: {qty_str}\n"
+                f"持仓仍未归零，下一轮重试"
+            )
             return False
         except Exception as e:
             print(f"  ⚠️ 平仓失败: {e}")
+            # 平仓失败通知
+            self.notifier.send(
+                f"❌ *平仓失败*\n"
+                f"交易对: `{self.symbol}`\n"
+                f"错误: {e}"
+            )
             return False
     
     def calculate_order_prices(self, market_price: float) -> tuple:
@@ -374,6 +414,16 @@ class MarketMaker:
         print(f"检查间隔: {check_interval}秒")
         print("=" * 60)
         
+        # 启动通知
+        self.notifier.send(
+            f"🚀 *做市策略启动*\n"
+            f"时间: {beijing_time}\n"
+            f"交易对: `{self.symbol}`\n"
+            f"数量: {self.qty}\n"
+            f"价格源: {self.price_source.upper()}\n"
+            f"阈值: {self.balance_threshold_1}/{self.balance_threshold_2} USDT"
+        )
+        
         # 初始化：检查余额并确定模式
         print(f"\n🔍 检查余额并确定运行模式...")
         self.check_and_update_mode()
@@ -455,13 +505,41 @@ class MarketMaker:
                     time.sleep(1)
                     self.check_and_update_mode()
                     self.place_orders(market_price)
+                    
+                    # 订单重挂通知（5分钟限流）
+                    self._reorder_count_since_notify += 1
+                    now_ts = time.time()
+                    throttle_window = 300  # 5分钟
+                    
+                    if now_ts - self._last_reorder_notify_time > throttle_window:
+                        notify_msg = (
+                            f"📝 *订单重挂*\n"
+                            f"交易对: `{self.symbol}`\n"
+                            f"过去 {throttle_window//60} 分钟内共 {self._reorder_count_since_notify} 次\n\n"
+                            f"市价: {market_price:.2f}\n"
+                            f"原因: {reason}"
+                        )
+                        self.notifier.send(notify_msg)
+                        self._last_reorder_notify_time = now_ts
+                        self._reorder_count_since_notify = 0
+                    
                     continue
                 
         except KeyboardInterrupt:
             print(f"\n\n⚠️ 收到中断信号，停止策略...")
+            self.notifier.send(
+                f"⚠️ *策略停止*\n"
+                f"交易对: `{self.symbol}`\n"
+                f"原因: 收到中断信号"
+            )
         except Exception as e:
             print(f"\n\n❌ 策略运行出现严重错误: {e}")
             print(f"   正在清理订单并退出...")
+            self.notifier.send(
+                f"❌ *致命异常*\n"
+                f"交易对: `{self.symbol}`\n"
+                f"错误: {e}"
+            )
         
         # 清理：取消所有订单
         print(f"\n🧹 清理所有订单...")
@@ -470,6 +548,13 @@ class MarketMaker:
         print(f"\n" + "=" * 60)
         print("策略已停止")
         print("=" * 60)
+        
+        # 停止通知
+        self.notifier.send(
+            f"🛑 *做市策略已停止*\n"
+            f"交易对: `{self.symbol}`\n"
+            f"订单已清理完成"
+        )
     
     def cleanup(self):
         """清理所有订单和资源"""
@@ -540,8 +625,19 @@ def main():
             "   方案2: 仅设置 ED25519_PRIVATE_KEY + ACCESS_TOKEN（WALLET_PRIVATE_KEY 应为空）"
         )
     
-    auth.authenticate()
-    print("✅ 认证成功\n")
+    # 初始化通知器（在认证前，方便发送认证失败通知）
+    notifier = Notifier.from_env()
+    
+    try:
+        auth.authenticate()
+        print("✅ 认证成功\n")
+    except Exception as e:
+        notifier.send(
+            f"❌ *认证失败*\n"
+            f"交易对: `{symbol}`\n"
+            f"错误: {e}"
+        )
+        raise
     
     # 创建做市器
     market_maker = MarketMaker(
@@ -555,6 +651,7 @@ def main():
         balance_threshold_2=balance_threshold_2,
         price_source=price_source,
         force_degraded_on_us_open=force_degraded_on_us_open,
+        notifier=notifier,
     )
     
     # 运行策略

@@ -133,6 +133,10 @@ MARKET_MAKER_CHECK_INTERVAL=0.0         # 价格监控间隔（0表示无延迟�
 
 # 价格数据源
 MARKET_MAKER_PRICE_SOURCE=http          # http: HTTP轮询 | websocket: WebSocket实时推送
+
+# Telegram 通知（可选）
+TELEGRAM_BOT_TOKEN=123456:ABC-your-bot-token-here
+TELEGRAM_CHAT_ID=123456789              # 你的 Telegram 用户 ID 或群组 ID
 ```
 
 ## 价格数据源
@@ -227,6 +231,75 @@ MARKET_MAKER_PRICE_SOURCE=websocket
 - `BALANCE_THRESHOLD_1`：设置为你能接受的"开始谨慎做市"的余额门槛
 - `BALANCE_THRESHOLD_2`：设置为你的"止损红线"，低于此值则采用极端价差模式
 
+## Telegram 通知配置
+
+做市器支持通过 Telegram 机器人推送关键事件通知，包括模式切换、持仓平仓、订单重挂、严重异常等。
+
+### 创建 Telegram Bot
+
+1. **与 BotFather 对话**  
+   在 Telegram 搜索 `@BotFather`，发送 `/newbot` 命令创建新机器人
+
+2. **设置机器人名称**  
+   按提示设置机器人的显示名称和用户名（用户名必须以 `bot` 结尾）
+
+3. **获取 Bot Token**  
+   创建成功后，BotFather 会返回一个 Token，格式类似：`123456789:ABCdefGHIjklMNOpqrsTUVwxyz`
+
+4. **获取 Chat ID**  
+   - 方法1：搜索 `@userinfobot`，发送任意消息，它会返回你的用户 ID
+   - 方法2：与你的 Bot 发送一条消息，然后访问：  
+
+     ```url
+     https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+     ```
+
+     在返回的 JSON 中找到 `message.chat.id`
+
+5. **配置环境变量**  
+   在 `.env` 文件中添加：
+
+   ```env
+   TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+   TELEGRAM_CHAT_ID=123456789
+   ```
+
+### 通知事件列表
+
+| 事件 | 触发条件 | 限流 |
+| ------ | --------- | ------ |
+| 策略启动 | 进程启动 | 无 |
+| 模式切换 | 余额跨阈值或美股开盘时段 | 无 |
+| 持仓平仓 | 检测到非零持仓并平仓 | 无 |
+| 平仓失败/超时 | 平仓请求失败或超时未归零 | 无 |
+| 订单重挂 | 价格偏离范围触发重挂 | **5分钟**（聚合显示次数） |
+| 致命异常 | 主循环抛出未捕获异常 | 无 |
+| 策略停止 | 优雅关闭并清理订单 | 无 |
+| 认证失败 | API 认证失败 | 无 |
+
+### 限流说明
+
+订单重挂是高频事件，为避免刷屏：
+
+- **首次重挂**：立即通知
+- **5 分钟内**：后续重挂静默累计
+- **5 分钟后**：下次重挂时发送通知，并显示"过去 5 分钟内共 N 次"
+
+### 测试通知
+
+在配置完成后，可以先测试通知是否正常：
+
+```bash
+source .venv/bin/activate
+python tests/test_notification.py
+```
+
+脚本会检查配置并发送测试消息到 Telegram。
+
+### 禁用通知
+
+如果不需要通知，只需不设置 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`，或将它们留空即可。策略会正常运行，仅跳过通知发送。
+
 ## 策略运行逻辑
 
 策略持续运行，每次循环执行以下三步：
@@ -261,9 +334,9 @@ MARKET_MAKER_PRICE_SOURCE=websocket
 
 ## 相关文件
 
-- 做市主程序：[market_maker.py](market_maker.py)（540 行）
+- 做市主程序：[market_maker.py](market_maker.py)（~600 行）
   - 双向限价单管理、价格监控、订单调整
-- 认证与 HTTP 工具：[standx_auth.py](standx_auth.py)（308 行）
+- 认证与 HTTP 工具：[standx_auth.py](standx_auth.py)（~600 行）
   - EIP-191 + Ed25519 钱包认证
   - `make_api_call()`：通用 HTTP 请求工具（支持重试）
   - `_body_signature_headers()`：Ed25519 签名生成（用于有序 API）
@@ -276,6 +349,8 @@ MARKET_MAKER_PRICE_SOURCE=websocket
   - HttpPriceProvider：通过 REST API 获取价格
   - WebSocketPriceProvider：通过 WebSocket 实时推送
   - 工厂函数：create_price_provider()
+- 通知模块：[notifier.py](notifier.py)（~70 行）
+  - Telegram 通知器，支持时间限流防刷屏
 - 依赖列表：[requirements.txt](requirements.txt)
 
 ## License
