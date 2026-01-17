@@ -16,6 +16,7 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 from base58 import b58encode, b58decode
 from nacl.signing import SigningKey
+from nacl.utils import random
 
 # API endpoints
 PREPARE_SIGNIN_URL = "https://api.standx.com/v1/offchain/prepare-signin"
@@ -61,21 +62,101 @@ def retry_on_network_error(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
 class StandXAuth:
     """Handle StandX authentication flow for BSC"""
     
-    def __init__(self, private_key: str, ed25519_key: str, token: str = None):
+    def __init__(self, private_key: str, ed25519_key: str = None, token: str = None):
         """
-        Initialize with wallet private key and Ed25519 key
+        Initialize with authentication parameters (two schemes supported).
+        
+        Scheme 1 (Wallet-based): Only private_key is provided
+            - private_key: Ethereum wallet private key with 0x prefix
+            - ed25519_key: None or empty (will be auto-generated)
+            - token: None or empty (will be obtained via wallet signature)
+        
+        Scheme 2 (Token-based): private_key is None/empty, ed25519_key and token are provided
+            - private_key: None or empty (wallet signing not used)
+            - ed25519_key: Ed25519 private key from StandX (44-char base58 string)
+            - token: Pre-obtained access token from StandX
         
         Args:
-            private_key: Wallet private key with 0x prefix (e.g., 0x123...)
-            ed25519_key: Ed25519 private key from StandX (44-char base58 string)
-            token: Optional access token. If provided, authentication flow is skipped.
+            private_key: Ethereum wallet private key (scheme 1) or None (scheme 2)
+            ed25519_key: Ed25519 private key (scheme 2) or None (scheme 1)
+            token: Access token (scheme 2) or None (scheme 1)
+            
+        Raises:
+            ValueError: If parameters don't match either scheme
         """
-        self.private_key = private_key
-        self.account = Account.from_key(private_key)
-        self.wallet_address = self.account.address
-        self.token = token
+        # Normalize None/empty to None
+        private_key = private_key if private_key else None
+        ed25519_key = ed25519_key if ed25519_key else None
+        token = token if token else None
         
-        # Load Ed25519 signing key from base58 string
+        # Validate parameter combinations
+        if private_key and ed25519_key and token:
+            raise ValueError(
+                "❌ 参数配置错误：检测到同时设置了WALLET_PRIVATE_KEY和(ED25519_PRIVATE_KEY + ACCESS_TOKEN)\n"
+                "   请选择其中一种方案：\n"
+                "   方案1: 仅设置WALLET_PRIVATE_KEY（系统自动生成ED25519密钥）\n"
+                "   方案2: 仅设置ED25519_PRIVATE_KEY + ACCESS_TOKEN（WALLET_PRIVATE_KEY应为空）"
+            )
+        
+        # Scheme 1: Wallet-based authentication
+        if private_key and not ed25519_key and not token:
+            print("🔑 方案1: 基于钱包签名的完整认证")
+            self.private_key = private_key
+            self.account = Account.from_key(private_key)
+            self.wallet_address = self.account.address
+            self.token = None
+            
+            # Auto-generate Ed25519 keypair
+            ed25519_key = self._generate_ed25519_keypair()
+            print(f"   ✓ 已自动生成ED25519密钥对")
+            self._load_ed25519_key(ed25519_key)
+            
+        # Scheme 2: Token-based authentication
+        elif not private_key and ed25519_key and token:
+            print("🔑 方案2: 基于预配置令牌的快速认证")
+            self.private_key = None
+            self.account = None
+            self.wallet_address = None
+            self.token = token
+            
+            # Load provided Ed25519 key
+            self._load_ed25519_key(ed25519_key)
+            
+        else:
+            # Invalid combination
+            raise ValueError(
+                "❌ 参数配置不完整或不符合任何方案\n"
+                "   方案1: 需要提供WALLET_PRIVATE_KEY（其他参数为空）\n"
+                "   方案2: 需要同时提供ED25519_PRIVATE_KEY和ACCESS_TOKEN（WALLET_PRIVATE_KEY为空）\n"
+                f"   当前配置: WALLET_PRIVATE_KEY={'✓' if private_key else '✗'}, "
+                f"ED25519_PRIVATE_KEY={'✓' if ed25519_key else '✗'}, "
+                f"ACCESS_TOKEN={'✓' if token else '✗'}"
+            )
+    
+    @staticmethod
+    def _generate_ed25519_keypair() -> str:
+        """
+        Generate a new Ed25519 keypair and return the private key.
+        
+        Returns:
+            Ed25519 private key as 44-character base58 encoded string
+        """
+        # Generate 32-byte random seed
+        seed_bytes = random(32)
+        # Encode as base58
+        ed25519_key_b58 = b58encode(seed_bytes).decode()
+        return ed25519_key_b58
+    
+    def _load_ed25519_key(self, ed25519_key: str):
+        """
+        Load Ed25519 signing key from base58 string.
+        
+        Args:
+            ed25519_key: Ed25519 private key (44-char base58 string)
+            
+        Raises:
+            ValueError: If key format is invalid
+        """
         try:
             seed_bytes = b58decode(ed25519_key)
             if len(seed_bytes) != 32:

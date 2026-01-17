@@ -519,8 +519,27 @@ def main():
     
     # 认证
     print("🔐 认证中...")
-    token = os.getenv("ACCESS_TOKEN")  # Optional pre-provided token
-    auth = StandXAuth(private_key, ed25519_key, token=token)
+    token = os.getenv("ACCESS_TOKEN")  # Optional access token for scheme 2
+    
+    # Distinguish between two schemes
+    if private_key and not ed25519_key and not token:
+        # Scheme 1: Wallet-based auth (ED25519_PRIVATE_KEY and ACCESS_TOKEN should be empty)
+        auth = StandXAuth(private_key, ed25519_key=None, token=None)
+    elif not private_key and ed25519_key and token:
+        # Scheme 2: Token-based auth (WALLET_PRIVATE_KEY should be empty)
+        auth = StandXAuth(private_key=None, ed25519_key=ed25519_key, token=token)
+    else:
+        # Invalid configuration
+        raise ValueError(
+            "❌ 认证配置错误\n"
+            f"   当前配置: WALLET_PRIVATE_KEY={'✓' if private_key else '✗'}, "
+            f"ED25519_PRIVATE_KEY={'✓' if ed25519_key else '✗'}, "
+            f"ACCESS_TOKEN={'✓' if token else '✗'}\n"
+            "   请选择其中一种方案：\n"
+            "   方案1: 仅设置 WALLET_PRIVATE_KEY（系统自动生成 ED25519 密钥）\n"
+            "   方案2: 仅设置 ED25519_PRIVATE_KEY + ACCESS_TOKEN（WALLET_PRIVATE_KEY 应为空）"
+        )
+    
     auth.authenticate()
     print("✅ 认证成功\n")
     
