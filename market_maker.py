@@ -48,6 +48,8 @@ class MarketMaker:
         
         # 通知器
         self.notifier = notifier or Notifier.from_env()
+        # 订单重挂通知限流（秒），可通过环境变量调整，默认 3600 秒（1 小时）
+        self.reorder_throttle_seconds = int(os.getenv('REORDER_NOTIFY_THROTTLE_SECONDS', '3600'))
         
         # 创建价格提供者
         self.price_provider = create_price_provider(price_source, auth, symbol)
@@ -83,9 +85,8 @@ class MarketMaker:
         self.buy_order = None
         self.sell_order = None
         
-        # 订单重挂通知限流（5分钟窗口）
-        self._last_reorder_notify_time = 0
-        self._reorder_count_since_notify = 0
+        # 订单重挂通知：使用 Notifier 的按键限流（按原因前缀聚合）
+        # 旧的时间/计数字段已弃用（reason-prefix 去重会替代它们）
         
         # 优雅关闭相关
         self._shutdown_requested = False
@@ -506,22 +507,16 @@ class MarketMaker:
                     self.check_and_update_mode()
                     self.place_orders(market_price)
                     
-                    # 订单重挂通知（5分钟限流）
-                    self._reorder_count_since_notify += 1
-                    now_ts = time.time()
-                    throttle_window = 300  # 5分钟
-                    
-                    if now_ts - self._last_reorder_notify_time > throttle_window:
-                        notify_msg = (
-                            f"📝 *订单重挂*\n"
-                            f"交易对: `{self.symbol}`\n"
-                            f"过去 {throttle_window//60} 分钟内共 {self._reorder_count_since_notify} 次\n\n"
-                            f"市价: {market_price:.2f}\n"
-                            f"原因: {reason}"
-                        )
-                        self.notifier.send(notify_msg)
-                        self._last_reorder_notify_time = now_ts
-                        self._reorder_count_since_notify = 0
+                    # 订单重挂通知：按原因前缀（冒号前）去重 5 分钟
+                    reason_key = (reason or "reorder").split(":", 1)[0].strip()
+                    notify_msg = (
+                        f"📝 *订单重挂*\n"
+                        f"交易对: `{self.symbol}`\n"
+                        f"市价: {market_price:.2f}\n"
+                        f"原因: {reason}"
+                    )
+                    # 使用 Notifier 的限流（相同 reason_key 在窗口内只发一次）
+                    self.notifier.send(notify_msg, throttle_key=reason_key, throttle_seconds=self.reorder_throttle_seconds)
                     
                     continue
                 
