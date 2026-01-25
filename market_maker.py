@@ -186,7 +186,7 @@ class MarketMaker:
                 
                 # 发送通知
                 notify_msg = (
-                    f"🔄 *模式切换* [{beijing_time}]\n"
+                    f"*模式切换* [{beijing_time}]\n"
                     f"交易对: `{self.symbol}`\n"
                     f"{mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}\n\n"
                     f"原因: {reason}\n"
@@ -281,7 +281,7 @@ class MarketMaker:
                     logger.info("持仓数量为 0（已平仓）")
                     # 平仓成功通知
                     self.notifier.send(
-                        f"✅ *平仓成功*\n"
+                        f"*平仓成功*\n"
                         f"交易对: `{self.symbol}`\n"
                         f"数量: {qty_str}\n"
                         f"方向: {close_side}"
@@ -291,7 +291,7 @@ class MarketMaker:
             logger.warning("超时：持仓仍未归零，稍后会在下一轮重试")
             # 平仓超时通知
             self.notifier.send(
-                f"⚠️ *平仓超时*\n"
+                f"*平仓超时*\n"
                 f"交易对: `{self.symbol}`\n"
                 f"数量: {qty_str}\n"
                 f"持仓仍未归零，下一轮重试"
@@ -301,7 +301,7 @@ class MarketMaker:
             logger.exception("平仓失败: %s", e)
             # 平仓失败通知
             self.notifier.send(
-                f"❌ *平仓失败*\n"
+                f"*平仓失败*\n"
                 f"交易对: `{self.symbol}`\n"
                 f"错误: {e}"
             )
@@ -523,7 +523,7 @@ class MarketMaker:
         except KeyboardInterrupt:
             logger.info("收到中断信号，停止策略...")
             self.notifier.send(
-                f"⚠️ *策略停止*\n"
+                f"*策略停止*\n"
                 f"交易对: `{self.symbol}`\n"
                 f"原因: 收到中断信号"
             )
@@ -531,7 +531,7 @@ class MarketMaker:
             logger.exception("策略运行出现严重错误: %s", e)
             logger.info("正在清理订单并退出...")
             self.notifier.send(
-                f"❌ *致命异常*\n"
+                f"*致命异常*\n"
                 f"交易对: `{self.symbol}`\n"
                 f"错误: {e}"
             )
@@ -544,7 +544,7 @@ class MarketMaker:
         
         # 停止通知
         self.notifier.send(
-            f"🛑 *做市策略已停止*\n"
+            f"*做市策略已停止*\n"
             f"交易对: `{self.symbol}`\n"
             f"订单已清理完成"
         )
