@@ -16,6 +16,9 @@ from standx_auth import StandXAuth
 import standx_api as api
 from price_providers import create_price_provider, PriceProvider
 from notifier import Notifier
+from logger import configure_logging, get_logger
+
+logger = get_logger(__name__)
 
 load_dotenv()
 
@@ -95,7 +98,7 @@ class MarketMaker:
     def _setup_signal_handlers(self):
         """设置信号处理器以支持优雅关闭"""
         def handle_signal(signum, frame):
-            print(f"\n🛑 收到信号 {signum}，准备优雅关闭...")
+            logger.info("收到信号 %s，准备优雅关闭...", signum)
             self._shutdown_requested = True
         
         signal.signal(signal.SIGTERM, handle_signal)
@@ -118,7 +121,7 @@ class MarketMaker:
             
             return market_open <= now < market_close
         except Exception as e:
-            print(f"  ⚠️ 美股开盘时间判断失败: {e}")
+            logger.warning("美股开盘时间判断失败: %s", e)
             return False
     
     def check_and_update_mode(self) -> bool:
@@ -144,7 +147,7 @@ class MarketMaker:
             else:
                 # 第2步：检查余额判断模式
                 balance_data = api.query_balance(self.auth)
-                print(f"  🔍 余额查询响应: {balance_data}")
+                logger.debug("余额查询响应: %s", balance_data)
                 
                 total_balance = float(balance_data.get("balance") or balance_data.get("equity") or 0)
                 
@@ -177,9 +180,9 @@ class MarketMaker:
                 }
                 beijing_tz = ZoneInfo("Asia/Shanghai")
                 beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
-                print(f"\n🔄 模式切换 [{beijing_time}]: {mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}")
-                print(f"   原因: {reason}")
-                print(f"   新挂单策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]")
+                logger.info("模式切换 [%s]: %s → %s", beijing_time, mode_names.get(old_mode, old_mode), mode_names.get(new_mode, new_mode))
+                logger.info("原因: %s", reason)
+                logger.info("新挂单策略: target=%s bps, 范围=[%s, %s]", self.target_bps, self.min_bps, self.max_bps)
                 
                 # 发送通知
                 notify_msg = (
@@ -196,7 +199,7 @@ class MarketMaker:
             return False
             
         except Exception as e:
-            print(f"  ⚠️ 模式更新失败: {e}，使用当前模式继续")
+            logger.exception("模式更新失败: %s，使用当前模式继续", e)
             return False
         
     def get_current_price(self) -> float:
@@ -204,7 +207,7 @@ class MarketMaker:
         try:
             return self.price_provider.get_current_price()
         except Exception as e:
-            print(f"  ⚠️ 获取价格失败: {e}，将在下次迭代重试")
+            logger.warning("获取价格失败: %s，将在下次迭代重试", e)
             raise
     
     def close_position(self, market_price: float) -> bool:
@@ -229,10 +232,10 @@ class MarketMaker:
             leverage = int(position.get("leverage")) if position.get("leverage") else None
             
             # 打印持仓详情便于调试
-            print(f"  📍 持仓详情: qty={qty_str}, side={side}, margin_mode={margin_mode}, leverage={leverage}")
+            logger.debug("持仓详情: qty=%s, side=%s, margin_mode=%s, leverage=%s", qty_str, side, margin_mode, leverage)
             
             if not qty_str or float(qty_str) == 0:
-                print(f"  ⚠️ 持仓数量为 0，无需平仓")
+                logger.info("持仓数量为 0，无需平仓")
                 return True
             
             qty_f = float(qty_str)
@@ -247,10 +250,10 @@ class MarketMaker:
                 close_side = "buy"
                 qty_send = f"{abs(qty_f):.4f}"
             else:
-                print(f"  ⚠️ 持仓数量为 0，无需平仓")
+                logger.info("持仓数量为 0，无需平仓")
                 return True
             
-            print(f"\n💰 检测到持仓，立即平仓: {close_side} {qty_send}")
+            logger.info("检测到持仓，立即平仓: %s %s", close_side, qty_send)
             
             close_resp = api.new_market_order(
                 self.auth,
@@ -263,7 +266,7 @@ class MarketMaker:
                 time_in_force="ioc",
             )
             
-            print(f"  ✅ 平仓请求已提交 (request_id: {close_resp.get('request_id')})，验证中...")
+            logger.info("平仓请求已提交 (request_id: %s)，验证中...", close_resp.get('request_id'))
             
             # 验证：轮询持仓是否已归零（最多30秒）
             start = time.time()
@@ -271,11 +274,11 @@ class MarketMaker:
                 time.sleep(1)
                 latest_positions = api.query_positions(self.auth, symbol=self.symbol)
                 if not latest_positions:
-                    print("  ✅ 持仓已清空")
+                    logger.info("持仓已清空")
                     return True
                 latest_qty = float(latest_positions[0].get("qty") or 0)
                 if latest_qty == 0:
-                    print("  ✅ 持仓数量为 0（已平仓）")
+                    logger.info("持仓数量为 0（已平仓）")
                     # 平仓成功通知
                     self.notifier.send(
                         f"✅ *平仓成功*\n"
@@ -285,7 +288,7 @@ class MarketMaker:
                     )
                     return True
             
-            print("  ⚠️ 超时：持仓仍未归零，稍后会在下一轮重试")
+            logger.warning("超时：持仓仍未归零，稍后会在下一轮重试")
             # 平仓超时通知
             self.notifier.send(
                 f"⚠️ *平仓超时*\n"
@@ -295,7 +298,7 @@ class MarketMaker:
             )
             return False
         except Exception as e:
-            print(f"  ⚠️ 平仓失败: {e}")
+            logger.exception("平仓失败: %s", e)
             # 平仓失败通知
             self.notifier.send(
                 f"❌ *平仓失败*\n"
@@ -322,7 +325,7 @@ class MarketMaker:
         """下双向限价单"""
         buy_price, sell_price = self.calculate_order_prices(market_price)
         
-        print(f"\n📝 下双向限价单 (市价: {market_price:.2f}):")
+        logger.info("下双向限价单 (市价: %.2f)", market_price)
         
         # 下买单
         try:
@@ -337,9 +340,9 @@ class MarketMaker:
                 margin_mode=self.margin_mode,
                 leverage=self.leverage,
             )
-            print(f"  ✅ 买单: {self.qty} @ {buy_price:.2f} (request_id: {buy_resp.get('request_id')})")
+            logger.info("买单: %s @ %.2f (request_id: %s)", self.qty, buy_price, buy_resp.get('request_id'))
         except Exception as e:
-            print(f"  ❌ 买单失败: {e}")
+            logger.exception("买单失败: %s", e)
         
         # 下卖单
         try:
@@ -354,9 +357,9 @@ class MarketMaker:
                 margin_mode=self.margin_mode,
                 leverage=self.leverage,
             )
-            print(f"  ✅ 卖单: {self.qty} @ {sell_price:.2f} (request_id: {sell_resp.get('request_id')})")
+            logger.info("卖单: %s @ %.2f (request_id: %s)", self.qty, sell_price, sell_resp.get('request_id'))
         except Exception as e:
-            print(f"  ❌ 卖单失败: {e}")
+            logger.exception("卖单失败: %s", e)
         
         # 等待订单生效（优化为1秒）
         time.sleep(1)
@@ -377,7 +380,7 @@ class MarketMaker:
                 elif order["side"] == "sell":
                     self.sell_order = order
         except Exception as e:
-            print(f"  ⚠️ 刷新订单状态失败: {e}")
+            logger.warning("刷新订单状态失败: %s", e)
             # 不抛出异常，使用上次缓存的订单状态
     
     def cancel_all_orders(self):
@@ -391,9 +394,9 @@ class MarketMaker:
         for order in orders_to_cancel:
             try:
                 cancel_resp = api.cancel_order(self.auth, order_id=order["id"])
-                print(f"  ✅ 取消 {order['side']} 订单 @ {order['price']}")
+                logger.info("取消 %s 订单 @ %s", order['side'], order['price'])
             except Exception as e:
-                print(f"  ❌ 取消失败: {e}")
+                logger.exception("取消失败: %s", e)
     
     def run(self, check_interval: float = 0.5):
         """
@@ -404,20 +407,17 @@ class MarketMaker:
         """
         beijing_tz = ZoneInfo("Asia/Shanghai")
         beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
-        print("=" * 60)
-        print(f"双向限价单做市策略启动 - {beijing_time}")
-        print("=" * 60)
-        print(f"交易对: {self.symbol}")
-        print(f"订单数量: {self.qty}")
-        print(f"价格数据源: {self.price_source.upper()}")
-        print(f"余额阈值1（手续费容忍）: {self.balance_threshold_1} USDT")
-        print(f"余额阈值2（止损）: {self.balance_threshold_2} USDT")
-        print(f"检查间隔: {check_interval}秒")
-        print("=" * 60)
+        logger.info("双向限价单做市策略启动 - %s", beijing_time)
+        logger.info("交易对: %s", self.symbol)
+        logger.info("订单数量: %s", self.qty)
+        logger.info("价格数据源: %s", self.price_source.upper())
+        logger.info("余额阈值1（手续费容忍）: %s USDT", self.balance_threshold_1)
+        logger.info("余额阈值2（止损）: %s USDT", self.balance_threshold_2)
+        logger.info("检查间隔: %s 秒", check_interval)
         
         # 启动通知
         self.notifier.send(
-            f"🚀 *做市策略启动*\n"
+            f"*做市策略启动*\n"
             f"时间: {beijing_time}\n"
             f"交易对: `{self.symbol}`\n"
             f"数量: {self.qty}\n"
@@ -426,17 +426,17 @@ class MarketMaker:
         )
         
         # 初始化：检查余额并确定模式
-        print(f"\n🔍 检查余额并确定运行模式...")
+        logger.info("检查余额并确定运行模式...")
         self.check_and_update_mode()
-        print(f"   当前模式: {self.current_mode}")
-        print(f"   挂单策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]")
+        logger.info("当前模式: %s", self.current_mode)
+        logger.info("挂单策略: target=%s bps, 范围=[%s, %s]", self.target_bps, self.min_bps, self.max_bps)
         
         # 监控循环
         try:
             while True:
                 # 检查是否收到关闭信号
                 if self._shutdown_requested:
-                    print(f"\n⏰ 收到关闭信号，停止策略")
+                    logger.info("收到关闭信号，停止策略")
                     break
                 
                 # 等待检查间隔
@@ -446,14 +446,14 @@ class MarketMaker:
                 try:
                     market_price = self.get_current_price()
                 except Exception as e:
-                    print(f"  ⚠️ 跳过本次迭代，继续监控...")
+                    logger.warning("跳过本次迭代，继续监控: %s", e)
                     continue
                 
                 # 获取北京时间
                 beijing_tz = ZoneInfo("Asia/Shanghai")
                 beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
                 
-                print(f"\n市价: {market_price:.2f} (北京时间: {beijing_time})")
+                logger.info("市价: %.2f (北京时间: %s)", market_price, beijing_time)
                 
                 # 第1步：检查持仓，存在则平仓
                 positions = api.query_positions(self.auth, symbol=self.symbol)
@@ -461,13 +461,13 @@ class MarketMaker:
                     position = positions[0]
                     qty = position.get("qty")
                     if qty and float(qty) != 0:
-                        print(f"\n💰 检测到持仓 (qty={qty})，立即平仓...")
+                        logger.info("检测到持仓 (qty=%s)，立即平仓...", qty)
                         try:
                             self.close_position(market_price)
                             # 平仓后检查余额并更新模式
                             self.check_and_update_mode()
                         except Exception as e:
-                            print(f"  ⚠️ 平仓失败: {e}，下次迭代重试...")
+                            logger.exception("平仓失败: %s，下次迭代重试...", e)
                         continue
                 
                 # 第2步：检查订单状态和偏离度
@@ -482,7 +482,7 @@ class MarketMaker:
                 else:
                     buy_price = float(self.buy_order["price"])
                     buy_bps = abs((market_price - buy_price) / market_price * 10000)
-                    print(f"  📗 买单: {buy_price:.2f} (偏离: {buy_bps:.1f} bps)")
+                    logger.info("买单: %.2f (偏离: %.1f bps)", buy_price, buy_bps)
                     if buy_bps < self.min_bps or buy_bps > self.max_bps:
                         need_replace = True
                         reason = f"买单偏离范围: {buy_bps:.1f} bps 不在 [{self.min_bps}, {self.max_bps}]"
@@ -494,14 +494,14 @@ class MarketMaker:
                 else:
                     sell_price = float(self.sell_order["price"])
                     sell_bps = abs((sell_price - market_price) / market_price * 10000)
-                    print(f"  📕 卖单: {sell_price:.2f} (偏离: {sell_bps:.1f} bps)")
+                    logger.info("卖单: %.2f (偏离: %.1f bps)", sell_price, sell_bps)
                     if sell_bps < self.min_bps or sell_bps > self.max_bps:
                         need_replace = True
                         reason = f"卖单偏离范围: {sell_bps:.1f} bps 不在 [{self.min_bps}, {self.max_bps}]" if not need_replace else reason
                 
                 # 如果需要重新下单
                 if need_replace:
-                    print(f"\n🚨 {reason}，取消所有订单并重新挂单...")
+                    logger.warning("%s，取消所有订单并重新挂单...", reason)
                     self.cancel_all_orders()
                     time.sleep(1)
                     self.check_and_update_mode()
@@ -510,7 +510,7 @@ class MarketMaker:
                     # 订单重挂通知：按原因前缀（冒号前）去重 5 分钟
                     reason_key = (reason or "reorder").split(":", 1)[0].strip()
                     notify_msg = (
-                        f"📝 *订单重挂*\n"
+                        f"*订单重挂*\n"
                         f"交易对: `{self.symbol}`\n"
                         f"市价: {market_price:.2f}\n"
                         f"原因: {reason}"
@@ -521,15 +521,15 @@ class MarketMaker:
                     continue
                 
         except KeyboardInterrupt:
-            print(f"\n\n⚠️ 收到中断信号，停止策略...")
+            logger.info("收到中断信号，停止策略...")
             self.notifier.send(
                 f"⚠️ *策略停止*\n"
                 f"交易对: `{self.symbol}`\n"
                 f"原因: 收到中断信号"
             )
         except Exception as e:
-            print(f"\n\n❌ 策略运行出现严重错误: {e}")
-            print(f"   正在清理订单并退出...")
+            logger.exception("策略运行出现严重错误: %s", e)
+            logger.info("正在清理订单并退出...")
             self.notifier.send(
                 f"❌ *致命异常*\n"
                 f"交易对: `{self.symbol}`\n"
@@ -537,12 +537,10 @@ class MarketMaker:
             )
         
         # 清理：取消所有订单
-        print(f"\n🧹 清理所有订单...")
+        logger.info("清理所有订单...")
         self.cleanup()
-        
-        print(f"\n" + "=" * 60)
-        print("策略已停止")
-        print("=" * 60)
+
+        logger.info("策略已停止")
         
         # 停止通知
         self.notifier.send(
@@ -564,9 +562,9 @@ class MarketMaker:
         for order in orders_to_cancel:
             try:
                 cancel_resp = api.cancel_order(self.auth, order_id=order["id"])
-                print(f"  ✅ 取消 {order['side']} 订单: {order['cl_ord_id']}")
+                logger.info("取消 %s 订单: %s", order['side'], order['cl_ord_id'])
             except Exception as e:
-                print(f"  ❌ 取消失败: {e}")
+                logger.exception("取消失败: %s", e)
         
         # 清理价格提供者资源（如 WebSocket 连接）
         self.price_provider.cleanup()
@@ -598,7 +596,7 @@ def main():
     force_degraded_on_us_open = os.getenv("MARKET_MAKER_FORCE_DEGRADED_ON_US_OPEN", "false").lower() == "true"
     
     # 认证
-    print("🔐 认证中...")
+    logger.info("认证中...")
     token = os.getenv("ACCESS_TOKEN")  # Optional access token for scheme 2
     
     # Distinguish between two schemes
@@ -625,7 +623,7 @@ def main():
     
     try:
         auth.authenticate()
-        print("✅ 认证成功\n")
+        logger.info("认证成功")
     except Exception as e:
         notifier.send(
             f"❌ *认证失败*\n"

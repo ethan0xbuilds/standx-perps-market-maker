@@ -6,6 +6,9 @@ Provides cleaner separation of concerns - standx_auth.py handles auth, this modu
 
 import json
 from standx_auth import StandXAuth
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def query_balance(auth: StandXAuth) -> dict:
@@ -15,7 +18,7 @@ def query_balance(auth: StandXAuth) -> dict:
     except Exception as e:
         msg = str(e)
         if "status=404" in msg and "user balance not found" in msg:
-            print("\n⚠️ 未找到账户余额记录，返回零值快照（可能尚未入金/转入保证金）。")
+            logger.info("未找到账户余额记录，返回零值快照（可能尚未入金/转入保证金）。")
             return {
                 "isolated_balance": "0",
                 "isolated_upnl": "0",

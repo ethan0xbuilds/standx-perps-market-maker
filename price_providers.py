@@ -11,6 +11,9 @@ from typing import Optional
 import websocket as ws
 from standx_auth import StandXAuth
 import standx_api as api
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class PriceProvider(ABC):
@@ -52,7 +55,7 @@ class HttpPriceProvider(PriceProvider):
                 raise ValueError(f"Invalid price: {price}")
             return price
         except Exception as e:
-            print(f"  ⚠️ HTTP 获取价格失败: {e}")
+            logger.warning("HTTP 获取价格失败: %s", e)
             raise
     
     def cleanup(self):
@@ -87,7 +90,7 @@ class WebSocketPriceProvider(PriceProvider):
         self._running = True
         self._ws_thread = threading.Thread(target=self._ws_loop, daemon=True)
         self._ws_thread.start()
-        print(f"  🔌 WebSocket 价格订阅启动中...")
+        logger.info("WebSocket 价格订阅启动中...")
         
         # 等待首次价格推送（最多 10 秒）
         if not self._wait_ready(timeout=10):
@@ -100,7 +103,7 @@ class WebSocketPriceProvider(PriceProvider):
             if time.time() - start > timeout:
                 return False
             time.sleep(0.1)
-        print(f"  ✅ WebSocket 已连接，当前价格: {self._latest_price:.2f}")
+        logger.info("WebSocket 已连接，当前价格: %.2f", self._latest_price)
         return True
     
     def _ws_loop(self):
@@ -109,7 +112,7 @@ class WebSocketPriceProvider(PriceProvider):
             try:
                 self._connect_and_subscribe()
             except Exception as e:
-                print(f"  ⚠️ WebSocket 连接失败: {e}，3秒后重连...")
+                logger.warning("WebSocket 连接失败: %s，3秒后重连...", e)
                 time.sleep(3)
     
     def _connect_and_subscribe(self):
@@ -131,7 +134,7 @@ class WebSocketPriceProvider(PriceProvider):
     
     def _on_open(self, ws):
         """WebSocket 连接建立回调"""
-        print(f"  🔌 WebSocket 已连接")
+        logger.info("WebSocket 已连接")
         
         # StandX 的 price channel 是公开的，无需认证
         # 直接订阅价格更新
@@ -142,7 +145,7 @@ class WebSocketPriceProvider(PriceProvider):
             }
         }
         ws.send(json.dumps(subscribe_msg))
-        print(f"  📡 已订阅 {self.symbol} 价格推送")
+        logger.info("已订阅 %s 价格推送", self.symbol)
     
     def _on_message(self, ws, message):
         """WebSocket 消息接收回调"""
@@ -165,15 +168,16 @@ class WebSocketPriceProvider(PriceProvider):
                     # print(f"  📊 WS 价格更新: {price:.2f}")
         
         except Exception as e:
-            print(f"  ⚠️ WebSocket 消息解析失败: {e}, 原始消息: {message}")
+            logger.warning("WebSocket 消息解析失败: %s", e)
+            logger.debug("原始消息: %s", message)
     
     def _on_error(self, ws, error):
         """WebSocket 错误回调"""
-        print(f"  ❌ WebSocket 错误: {error}")
+        logger.error("WebSocket 错误: %s", error)
     
     def _on_close(self, ws, close_status_code, close_msg):
         """WebSocket 关闭回调"""
-        print(f"  🔌 WebSocket 连接关闭: {close_status_code} - {close_msg}")
+        logger.info("WebSocket 连接关闭: %s - %s", close_status_code, close_msg)
     
     def get_current_price(self) -> float:
         """获取最新价格（从内存读取，几乎零延迟）"""
@@ -184,7 +188,7 @@ class WebSocketPriceProvider(PriceProvider):
     
     def cleanup(self):
         """清理 WebSocket 连接"""
-        print(f"  🔌 关闭 WebSocket 连接...")
+        logger.info("关闭 WebSocket 连接...")
         self._running = False
         if self._ws:
             self._ws.close()

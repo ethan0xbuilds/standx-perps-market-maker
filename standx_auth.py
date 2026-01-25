@@ -17,6 +17,9 @@ from eth_account.messages import encode_defunct
 from base58 import b58encode, b58decode
 from nacl.signing import SigningKey
 from nacl.utils import random
+from logger import get_logger
+
+logger = get_logger(__name__)
 
 # API endpoints
 PREPARE_SIGNIN_URL = "https://api.standx.com/v1/offchain/prepare-signin"
@@ -47,10 +50,10 @@ def retry_on_network_error(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
                         requests.exceptions.ProxyError) as e:
                     last_exception = e
                     if attempt < max_retries - 1:
-                        print(f"  ⚠️ 网络错误 (尝试 {attempt + 1}/{max_retries}): {type(e).__name__}，{delay}秒后重试...")
+                        logger.warning("网络错误 (尝试 %d/%d): %s，%s秒后重试...", attempt + 1, max_retries, type(e).__name__, delay)
                         time.sleep(delay)
                     else:
-                        print(f"  ❌ 重试{max_retries}次后仍失败")
+                        logger.error("重试%d次后仍失败", max_retries)
                 except Exception as e:
                     # 非网络错误直接抛出
                     raise
@@ -100,7 +103,7 @@ class StandXAuth:
         
         # Scheme 1: Wallet-based authentication
         if private_key and not ed25519_key and not token:
-            print("🔑 方案1: 基于钱包签名的完整认证")
+            logger.info("方案1: 基于钱包签名的完整认证")
             self.private_key = private_key
             self.account = Account.from_key(private_key)
             self.wallet_address = self.account.address
@@ -108,12 +111,12 @@ class StandXAuth:
             
             # Auto-generate Ed25519 keypair
             ed25519_key = self._generate_ed25519_keypair()
-            print(f"   ✓ 已自动生成ED25519密钥对")
+            logger.info("已自动生成ED25519密钥对")
             self._load_ed25519_key(ed25519_key)
             
         # Scheme 2: Token-based authentication
         elif not private_key and ed25519_key and token:
-            print("🔑 方案2: 基于预配置令牌的快速认证")
+            logger.info("方案2: 基于预配置令牌的快速认证")
             self.private_key = None
             self.account = None
             self.wallet_address = None
@@ -178,7 +181,7 @@ class StandXAuth:
         Raises:
             Exception: If API call fails
         """
-        print(f"[1/4] Calling prepare-signin endpoint...")
+        logger.info("Calling prepare-signin endpoint... [1/4]")
         
         params = {"chain": CHAIN}
         payload = {
@@ -206,13 +209,14 @@ class StandXAuth:
             if not signed_data:
                 raise Exception("No signedData in response")
             
-            print(f"✓ Received signedData JWT")
+            logger.info("Received signedData JWT")
             return {"signedData": signed_data}
             
         except requests.exceptions.RequestException as e:
             detail = ""
             if hasattr(e, "response") and e.response is not None:
-                detail = f" status={e.response.status_code} body={e.response.text}"
+                detail = f" status={e.response.status_code}"
+            logger.exception("HTTP error in prepare-signin: %s %s", str(e), detail)
             raise Exception(f"HTTP error in prepare-signin: {str(e)}{detail}")
     
     def _extract_message_from_jwt(self, signed_data: str) -> str:
@@ -227,7 +231,7 @@ class StandXAuth:
         Returns:
             Message string to be signed
         """
-        print(f"[2/4] Extracting message from JWT...")
+        logger.info("Extracting message from JWT... [2/4]")
         
         try:
             # Decode without verification (as we don't have StandX's public key here)
@@ -238,10 +242,11 @@ class StandXAuth:
             if not message:
                 raise Exception("No message field in JWT payload")
             
-            print(f"✓ Extracted message: {message[:50]}...")
+            logger.debug("Extracted message (truncated): %s...", message[:50])
             return message
             
         except jwt.DecodeError as e:
+            logger.exception("JWT decode error: %s", str(e))
             raise Exception(f"JWT decode error: {str(e)}")
     
     def _sign_message(self, message: str) -> str:
@@ -254,7 +259,7 @@ class StandXAuth:
         Returns:
             Signature hex string
         """
-        print(f"[3/4] Signing message with wallet...")
+        logger.info("Signing message with wallet... [3/4]")
         
         try:
             # Create message hash using Ethereum standard (EIP-191)
@@ -264,11 +269,12 @@ class StandXAuth:
             signed_message = self.account.sign_message(message_hash)
             
             signature = signed_message.signature.hex()
-            print(f"✓ Generated signature: {signature[:20]}...")
+            logger.debug("Generated signature (masked)")
             
             return signature
             
         except Exception as e:
+            logger.exception("Signing error: %s", str(e))
             raise Exception(f"Signing error: {str(e)}")
     
     @retry_on_network_error()
@@ -286,7 +292,7 @@ class StandXAuth:
         Raises:
             Exception: If login fails
         """
-        print(f"[4/4] Calling login endpoint...")
+        logger.info("Calling login endpoint... [4/4]")
         
         payload = {
             "signature": signature,
@@ -312,19 +318,16 @@ class StandXAuth:
             
             if "token" not in data:
                 raise Exception(f"Login failed: {data}")
-            
+
             self.token = data.get("token")
-            print(f"✓ Received access token: {self.token}...")
-            
-            print(f"✓ Successfully authenticated!")
-            print(f"  - Address: {data.get('address')}")
-            print(f"  - Alias: {data.get('alias', 'N/A')}")
-            print(f"  - Chain: {data.get('chain')}")
-            print(f"  - Perps Alpha: {data.get('perpsAlpha')}")
-            
+            logger.info("Access token received (redacted)")
+            logger.info("Successfully authenticated")
+            logger.debug("Auth response meta: address=%s alias=%s chain=%s perpsAlpha=%s", data.get('address'), data.get('alias', 'N/A'), data.get('chain'), data.get('perpsAlpha'))
+
             return data
             
         except requests.exceptions.RequestException as e:
+            logger.exception("HTTP error in login: %s", str(e))
             raise Exception(f"HTTP error in login: {str(e)}")
     
     def authenticate(self) -> dict:
@@ -336,19 +339,13 @@ class StandXAuth:
         """
         # If token was provided at initialization, skip authentication
         if self.token:
-            print(f"\n{'='*60}")
-            print(f"StandX Authentication (BSC)")
-            print(f"Wallet: {self.wallet_address}")
-            print(f"✓ Using provided access token")
-            print(f"Access Token: {self.token[:50]}...")
-            print(f"{'='*60}\n")
+            logger.info("StandX Authentication (BSC) using provided token")
+            logger.debug("Wallet: %s", self.wallet_address)
             return {"token": self.token}
         
-        print(f"\n{'='*60}")
-        print(f"StandX Authentication Flow (BSC)")
-        print(f"Wallet: {self.wallet_address}")
-        print(f"requestId (base58 ed25519 pubkey): {self.request_id}")
-        print(f"{'='*60}\n")
+        logger.info("StandX Authentication Flow (BSC)")
+        logger.debug("Wallet: %s", self.wallet_address)
+        logger.debug("requestId (ed25519 pubkey): %s", self.request_id)
         
         try:
             # Step 1: Get signature data
@@ -364,15 +361,12 @@ class StandXAuth:
             # Step 4: Get access token
             auth_response = self._get_access_token(signature, signed_data)
             
-            print(f"\n{'='*60}")
-            print(f"✓ Authentication Successful!")
-            print(f"Access Token: {self.token[:50]}...")
-            print(f"{'='*60}\n")
+            logger.info("Authentication successful (access token redacted)")
             
             return auth_response
             
         except Exception as e:
-            print(f"\n❌ Authentication failed: {str(e)}\n")
+            logger.exception("Authentication failed: %s", str(e))
             raise
     
     def get_token(self) -> str:
@@ -431,11 +425,13 @@ class StandXAuth:
             if status == 403 and body and "signature has expired" in body:
                 raise Exception(f"Body signature expired (403): {body} - 请检查系统时间是否同步")
             detail = f" status={status} url={url} body={body}" if status else f" url={url}"
+            logger.exception("API call HTTPError: %s %s", str(e), detail)
             raise Exception(f"API call failed: {str(e)}{detail}")
         except requests.exceptions.RequestException as e:
             status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
             body = getattr(e.response, "text", None) if hasattr(e, "response") and e.response is not None else None
             detail = f" status={status} url={url} body={body}" if status else f" url={url}"
+            logger.exception("API call RequestException: %s %s", str(e), detail)
             raise Exception(f"API call failed: {str(e)}{detail}")
 
     def _body_signature_headers(self, payload_str: str) -> dict:
@@ -478,41 +474,37 @@ def main():
     
     # Authenticate and get token
     auth_response = auth.authenticate()
+    logger.debug("Authentication response: %s", auth_response)
     
-    # Print auth response (optional)
-    print("\nFull Authentication Response:")
-    print(json.dumps(auth_response, indent=2))
+    # Debug: auth response and public price (redacted in logs)
+    logger.debug("Full Authentication Response: %s", json.dumps(auth_response, indent=2))
 
     # Public sanity check: query symbol price
     symbol = os.getenv("LIMIT_ORDER_SYMBOL", "BTC-USD")
     price = auth.query_symbol_price(symbol)
-    print(f"\nPublic Price ({symbol}):")
-    print(json.dumps(price, indent=2))
+    logger.debug("Public Price (%s): %s", symbol, json.dumps(price, indent=2))
 
-    # Query and print user balance (graceful on empty account)
+    # Query and log user balance (graceful on empty account)
     try:
         balance = auth.query_balance()
-        print("\nUser Balance:")
-        print(json.dumps(balance, indent=2))
+        logger.debug("User Balance: %s", json.dumps(balance, indent=2))
     except Exception as e:
-        print(f"\n❌ 查询余额失败: {e}")
+        logger.warning("查询余额失败: %s", e)
 
     # Query and print user positions
     try:
         positions = auth.query_positions(symbol=symbol)
-        print("\nUser Positions:")
+        logger.debug("User Positions: %s", json.dumps(positions, indent=2))
         if positions:
-            print(json.dumps(positions, indent=2))
-            # Extract leverage and margin_mode from position for order placement
             position = positions[0] if positions else None
             current_leverage = int(position["leverage"]) if position else None
             current_margin_mode = position["margin_mode"] if position else None
         else:
-            print("  无持仓")
+            logger.debug("无持仓")
             current_leverage = None
             current_margin_mode = None
     except Exception as e:
-        print(f"\n❌ 查询持仓失败: {e}")
+        logger.warning("查询持仓失败: %s", e)
         current_leverage = None
         current_margin_mode = None
 
@@ -550,42 +542,42 @@ def main():
             leverage=current_leverage,
         )
         order_request_id = order_resp.get("request_id")
-        print(f"\nPlaced {side} limit order @ {limit_price_str} ({bps} bps adj)")
-        print(json.dumps(order_resp, indent=2))
+        logger.info("Placed %s limit order @ %s (%s bps adj)", side, limit_price_str, bps)
+        logger.debug("Order response: %s", json.dumps(order_resp, indent=2))
     except Exception as e:
-        print(f"\n❌ 下单失败: {e}")
+        logger.exception("下单失败: %s", e)
         order_request_id = None
 
     # Query order status using client order ID (request_id)
     if 'order_request_id' in locals() and order_request_id:
-        print(f"\n⏳ Waiting 5s for order to be recorded in backend...")
+        logger.info("Waiting 5s for order to be recorded in backend...")
         time.sleep(5)
-        
+
         # Try query_open_orders with symbol
-        print(f"\n📋 Querying open orders for {symbol}...")
+        logger.info("Querying open orders for %s...", symbol)
         try:
             open_orders = auth.query_open_orders(symbol=symbol, limit=10)
-            print(f"Open Orders ({symbol}):")
+            logger.info("Open Orders (%s):", symbol)
             if open_orders.get("result"):
                 for ord in open_orders["result"]:
-                    print(f"  ✅ {ord['cl_ord_id']}: {ord['status']} @ {ord['price']} qty={ord['qty']} side={ord['side']}")
+                    logger.info("%s: %s @ %s qty=%s side=%s", ord['cl_ord_id'], ord['status'], ord['price'], ord['qty'], ord['side'])
             else:
-                print(f"  (empty, page_size={open_orders.get('page_size')})")
+                logger.info("(empty, page_size=%s)", open_orders.get('page_size'))
         except Exception as e:
-            print(f"  ❌ Error: {e}")
+            logger.warning("Query open orders error: %s", e)
         
         # Try query_orders with symbol filter
-        print(f"\n📜 Querying all orders with symbol={symbol}...")
+        logger.info("Querying all orders with symbol=%s...", symbol)
         try:
             all_orders = auth.query_orders(symbol=symbol, limit=50)
-            print(f"Orders ({symbol}, recent 50):")
+            logger.info("Orders (%s, recent 50):", symbol)
             if all_orders.get("result"):
                 for ord in all_orders["result"][:10]:  # Show first 10
-                    print(f"  - {ord['cl_ord_id']}: {ord['status']} @ {ord['price']} qty={ord['qty']} side={ord['side']}")
+                    logger.info("- %s: %s @ %s qty=%s side=%s", ord['cl_ord_id'], ord['status'], ord['price'], ord['qty'], ord['side'])
             else:
-                print(f"  (empty, page_size={all_orders.get('page_size')})")
+                logger.info("(empty, page_size=%s)", all_orders.get('page_size'))
         except Exception as e:
-            print(f"  ❌ Error: {e}")
+            logger.warning("Query orders error: %s", e)
 
 
 if __name__ == "__main__":
