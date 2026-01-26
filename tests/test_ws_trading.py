@@ -93,17 +93,8 @@ class SimpleWSClient:
         try:
             data = json.loads(message)
 
-            # 认证响应
-            if "auth" in data:
-                code = data.get("auth", {}).get("code")
-                if code == 0:
-                    logger.info("认证成功")
-                    self._subscribe_channels(ws_conn)
-                else:
-                    logger.error("认证失败: %s", data.get("auth", {}).get("msg"))
-
             # 订阅响应
-            elif "subscribe" in data:
+            if "subscribe" in data:
                 result = data.get("subscribe", {})
                 logger.info(
                     "订阅响应: code=%s, msg=%s", result.get("code"), result.get("msg")
@@ -185,7 +176,7 @@ class SimpleWSClient:
 
             # 既没有 auth 也没有 channel 的消息
             else:
-                logger.error("未识别的消息类型: %s", json.dumps(data)[:200])
+                logger.info("未识别的消息类型: %s", json.dumps(data)[:200])
 
         except json.JSONDecodeError:
             pass
