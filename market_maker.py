@@ -84,9 +84,9 @@ class MarketMaker:
         self.leverage = int(position["leverage"]) if position else 40
         self.margin_mode = position["margin_mode"] if position else "cross"
         
-        # 当前订单
-        self.buy_order = None
-        self.sell_order = None
+        # 当前订单（列表形式，支持检测多个订单）
+        self.buy_orders = []
+        self.sell_orders = []
         
         # 订单重挂通知：使用 Notifier 的按键限流（按原因前缀聚合）
         # 旧的时间/计数字段已弃用（reason-prefix 去重会替代它们）
@@ -371,25 +371,20 @@ class MarketMaker:
             open_orders = api.query_open_orders(self.auth, symbol=self.symbol)
             orders = open_orders.get("result", [])
             
-            self.buy_order = None
-            self.sell_order = None
+            self.buy_orders = []
+            self.sell_orders = []
             
             for order in orders:
                 if order["side"] == "buy":
-                    self.buy_order = order
+                    self.buy_orders.append(order)
                 elif order["side"] == "sell":
-                    self.sell_order = order
+                    self.sell_orders.append(order)
         except Exception as e:
             logger.warning("刷新订单状态失败: %s", e)
-            # 不抛出异常，使用上次缓存的订单状态
     
     def cancel_all_orders(self):
         """取消所有订单"""
-        orders_to_cancel = []
-        if self.buy_order:
-            orders_to_cancel.append(self.buy_order)
-        if self.sell_order:
-            orders_to_cancel.append(self.sell_order)
+        orders_to_cancel = self.buy_orders + self.sell_orders
         
         for order in orders_to_cancel:
             try:
@@ -476,11 +471,14 @@ class MarketMaker:
                 reason = ""
                 
                 # 检查买单
-                if not self.buy_order:
+                if not self.buy_orders:
                     need_replace = True
                     reason = "缺少买单"
+                elif len(self.buy_orders) > 1:
+                    need_replace = True
+                    reason = f"买单数量异常: {len(self.buy_orders)} 个"
                 else:
-                    buy_price = float(self.buy_order["price"])
+                    buy_price = float(self.buy_orders[0]["price"])
                     buy_bps = abs((market_price - buy_price) / market_price * 10000)
                     logger.info("买单: %.2f (偏离: %.1f bps)", buy_price, buy_bps)
                     if buy_bps < self.min_bps or buy_bps > self.max_bps:
@@ -488,11 +486,14 @@ class MarketMaker:
                         reason = f"买单偏离范围: {buy_bps:.1f} bps 不在 [{self.min_bps}, {self.max_bps}]"
                 
                 # 检查卖单
-                if not self.sell_order:
+                if not self.sell_orders:
                     need_replace = True
                     reason = "缺少卖单" if not need_replace else reason
+                elif len(self.sell_orders) > 1:
+                    need_replace = True
+                    reason = f"卖单数量异常: {len(self.sell_orders)} 个" if not need_replace else reason
                 else:
-                    sell_price = float(self.sell_order["price"])
+                    sell_price = float(self.sell_orders[0]["price"])
                     sell_bps = abs((sell_price - market_price) / market_price * 10000)
                     logger.info("卖单: %.2f (偏离: %.1f bps)", sell_price, sell_bps)
                     if sell_bps < self.min_bps or sell_bps > self.max_bps:
@@ -552,12 +553,7 @@ class MarketMaker:
     def cleanup(self):
         """清理所有订单和资源"""
         self.refresh_orders()
-        orders_to_cancel = []
-        
-        if self.buy_order:
-            orders_to_cancel.append(self.buy_order)
-        if self.sell_order:
-            orders_to_cancel.append(self.sell_order)
+        orders_to_cancel = self.buy_orders + self.sell_orders
         
         for order in orders_to_cancel:
             try:
