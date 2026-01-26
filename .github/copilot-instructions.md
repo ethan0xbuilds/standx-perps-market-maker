@@ -27,6 +27,7 @@
 ## Style & maintainability（代码风格与可维护性）
 - Follow idiomatic Python: type hints, docstrings, short functions, clear names.
 - Keep changes documented and update `README.md` when behavior or configuration changes.
+- **NEVER use emojis in code, comments, logs, or commit messages. Emojis are unprofessional and banned in this project.** （中文：**严禁在代码、注释、日志或提交信息中使用任何 emoji 表情符号，这非常不专业**）
 
 ## File-specific priorities（文件优先级）
 - `market_maker.py`: preserve safety checks; suggest adding a simulation/safe mode for tests. （中文：改动策略逻辑前必须保证可回滚）
