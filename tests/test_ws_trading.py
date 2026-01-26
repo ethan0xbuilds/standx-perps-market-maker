@@ -50,7 +50,7 @@ class SimpleWSClient:
         time.sleep(timeout)
         if not self.ws:
             raise TimeoutError("WebSocket 连接超时")
-        logger.info("✅ WebSocket 已连接")
+        logger.info("WebSocket 已连接")
     
     def _run_ws(self):
         """后台线程运行 WebSocket"""
@@ -71,7 +71,7 @@ class SimpleWSClient:
     
     def _on_open(self, ws_conn):
         """连接打开 - 发送认证"""
-        logger.info("📡 WebSocket 已连接，发送认证...")
+        logger.info("WebSocket 已连接，发送认证...")
         
         auth_msg = {
             "auth": {
@@ -90,10 +90,10 @@ class SimpleWSClient:
             if "auth" in data:
                 code = data.get("auth", {}).get("code")
                 if code == 0:
-                    logger.info("✅ 认证成功")
+                    logger.info("认证成功")
                     self._subscribe_channels(ws_conn)
                 else:
-                    logger.error("❌ 认证失败: %s", data.get("auth", {}).get("msg"))
+                    logger.error("认证失败: %s", data.get("auth", {}).get("msg"))
             
             # 频道消息
             elif "channel" in data:
@@ -104,16 +104,16 @@ class SimpleWSClient:
                     status = msg_data.get("status")
                     order_id = msg_data.get("order_id")
                     filled_qty = msg_data.get("filled_qty", "0")
-                    logger.info("📌 订单更新 [#%s]: 状态=%s, 成交量=%s", order_id, status, filled_qty)
+                    logger.info("订单更新 [#%s]: 状态=%s, 成交量=%s", order_id, status, filled_qty)
                 
                 elif channel == "position":
                     symbol = msg_data.get("symbol")
                     qty = msg_data.get("qty")
-                    logger.info("💼 持仓更新 [%s]: %s", symbol, qty)
+                    logger.info("持仓更新 [%s]: %s", symbol, qty)
                 
                 elif channel == "balance":
                     balance = msg_data.get("balance")
-                    logger.info("💰 余额更新: %s", balance)
+                    logger.info("余额更新: %s", balance)
         
         except json.JSONDecodeError:
             pass
@@ -122,18 +122,18 @@ class SimpleWSClient:
     
     def _on_error(self, ws_conn, error):
         """错误回调"""
-        logger.error("⚠️  WebSocket 错误: %s", error)
+        logger.error("WebSocket 错误: %s", error)
     
     def _on_close(self, ws_conn, close_status_code, close_msg):
         """关闭回调"""
-        logger.info("🔌 WebSocket 关闭: %s", close_status_code)
+        logger.info("WebSocket 关闭: %s", close_status_code)
     
     def _subscribe_channels(self, ws_conn):
         """订阅事件频道"""
         for channel in ["order", "position", "balance"]:
             msg = json.dumps({"subscribe": {"channel": channel}})
             ws_conn.send(msg)
-            logger.info("📊 已订阅: %s", channel)
+            logger.info("已订阅: %s", channel)
     
     def stop(self):
         """停止连接"""
@@ -158,9 +158,9 @@ def main():
             ed25519_key=os.getenv("ED25519_PRIVATE_KEY"),
             token=os.getenv("ACCESS_TOKEN")
         )
-        logger.info("✅ 认证成功\n")
+        logger.info("认证成功\n")
     except Exception as e:
-        logger.error("❌ 认证失败: %s", e)
+        logger.error("认证失败: %s", e)
         return
     
     # 启动 WebSocket
@@ -168,27 +168,27 @@ def main():
     try:
         client.start()
     except Exception as e:
-        logger.error("❌ WebSocket 连接失败: %s", e)
+        logger.error("WebSocket 连接失败: %s", e)
         return
     
     try:
         # 获取价格
         symbol = "BTC-USD"
-        logger.info("📈 获取 %s 价格...", symbol)
+        logger.info("获取 %s 价格...", symbol)
         price_data = api.query_symbol_price(auth, symbol)
         mark_price = float(price_data.get("mark_price") or price_data.get("mid_price"))
-        logger.info("📊 当前价格: %.2f\n", mark_price)
+        logger.info("当前价格: %.2f\n", mark_price)
         
         # 获取余额
-        logger.info("💰 获取账户余额...")
+        logger.info("获取账户余额...")
         balance = api.query_balance(auth)
-        logger.info("✅ 可用余额: %s\n", balance.get("cross_available", "0"))
+        logger.info("可用余额: %s\n", balance.get("cross_available", "0"))
         
         # 下限价单
         qty = "0.001"
         bid_price = f"{mark_price * 0.95:.2f}"  # 比市价低 5%
         
-        logger.info("📤 准备下单:")
+        logger.info("准备下单:")
         logger.info("   交易对: %s", symbol)
         logger.info("   方向: BUY")
         logger.info("   数量: %s", qty)
@@ -204,18 +204,18 @@ def main():
         )
         
         order_id = result.get("order_id")
-        logger.info("✅ 订单已下达 [order_id=%s]\n", order_id)
+        logger.info("订单已下达 [order_id=%s]\n", order_id)
         
         # 监听 WebSocket 事件 30 秒
-        logger.info("📡 监听 WebSocket 事件推送 (30秒)...")
+        logger.info("监听 WebSocket 事件推送 (30秒)...")
         logger.info("   订单状态变化: new -> partial_fill -> filled / cancelled\n")
         time.sleep(30)
         
     except Exception as e:
-        logger.error("❌ 执行失败: %s", e)
+        logger.error("执行失败: %s", e)
     finally:
         client.stop()
-        logger.info("\n✅ Demo 完成")
+        logger.info("\nDemo 完成")
 
 
 if __name__ == "__main__":
