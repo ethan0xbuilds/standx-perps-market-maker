@@ -20,7 +20,7 @@ class Notifier:
         # 限流状态（用于订单重挂等高频事件）
         self._throttle_state = {}
     
-    def send(self, text: str, throttle_key: Optional[str] = None, throttle_seconds: int = 0):
+    async def send(self, text: str, throttle_key: Optional[str] = None, throttle_seconds: int = 0):
         """
         发送 Telegram 消息
         
