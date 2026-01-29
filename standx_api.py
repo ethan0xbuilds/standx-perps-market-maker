@@ -11,7 +11,7 @@ from logger import get_logger
 logger = get_logger(__name__)
 
 
-def query_balance(auth: StandXAuth) -> dict:
+async def query_balance(auth: StandXAuth) -> dict:
     """Query unified user balance snapshot"""
     try:
         return auth.make_api_call("/api/query_balance")
@@ -40,7 +40,7 @@ def query_symbol_price(auth: StandXAuth, symbol: str) -> dict:
     return auth.make_api_call("/api/query_symbol_price", params={"symbol": symbol})
 
 
-def query_positions(auth: StandXAuth, symbol: str = None) -> list:
+async def query_positions(auth: StandXAuth, symbol: str = None) -> list:
     """Query user positions (optionally filtered by symbol)"""
     params = {"symbol": symbol} if symbol else None
     result = auth.make_api_call("/api/query_positions", params=params)
@@ -48,7 +48,7 @@ def query_positions(auth: StandXAuth, symbol: str = None) -> list:
     return result if isinstance(result, list) else []
 
 
-def new_limit_order(
+async def new_limit_order(
     auth: StandXAuth,
     symbol: str,
     side: str,
@@ -96,7 +96,7 @@ def new_limit_order(
     )
 
 
-def new_market_order(
+async def new_market_order(
     auth: StandXAuth,
     symbol: str,
     side: str,
@@ -141,7 +141,7 @@ def new_market_order(
     )
 
 
-def cancel_order(auth: StandXAuth, order_id: int = None, cl_ord_id: str = None) -> dict:
+async def cancel_order(auth: StandXAuth, order_id: int = None, cl_ord_id: str = None) -> dict:
     """
     Cancel an existing order (requires body signature).
     
@@ -185,7 +185,7 @@ def query_order(auth: StandXAuth, order_id: int = None, cl_ord_id: str = None) -
     return auth.make_api_call("/api/query_order", params=params)
 
 
-def query_open_orders(auth: StandXAuth, symbol: str = None, limit: int = None) -> dict:
+async def query_open_orders(auth: StandXAuth, symbol: str = None, limit: int = None) -> dict:
     """Query all open orders, optionally filtered by symbol."""
     params = {}
     if symbol is not None:
