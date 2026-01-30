@@ -9,23 +9,37 @@ logger = get_logger(__name__)
 
 
 class StandXAdapter:
+    """
+    StandXAdapter 用于对接 StandX 市场 WebSocket，处理市场深度、订单、持仓等推送数据，
+    并提供本地缓存和查询接口。支持异步订阅和事件处理。
+    """
     def __init__(self):
         self.market_stream: Optional[StandXMarketStream] = None
-        self._depth_mid_price: float = None
-        self._last_price_update_time: float = None
+        self._depth_mid_price: Optional[float] = None
+        self._last_price_update_time: Optional[float] = None
         self._price_updated_and_processed: bool = True
-        self._orders = []
-        self._position = []
+        self._orders: list = []
+        self._position: Optional[dict] = None
 
     async def connect_market_stream(self) -> StandXMarketStream:
-        """连接市场 WebSocket（公共频道无需认证）"""
+        """
+        连接市场 WebSocket（公共频道无需认证）
+        Returns:
+            StandXMarketStream: 已连接的市场数据流对象
+        """
         if not self.market_stream:
             self.market_stream = StandXMarketStream()
         if not self.market_stream.connected:
             await self.market_stream.connect()
 
     async def subscribe_market(self, channel: str, symbol: str, callback=None):
-        """订阅市场 WebSocket 频道"""
+        """
+        订阅市场 WebSocket 频道
+        Args:
+            channel (str): 频道名
+            symbol (str): 交易对
+            callback (callable, optional): 回调函数
+        """
         await self.connect_market_stream()
         await self.market_stream.subscribe(channel, symbol, callback=callback)
 
@@ -81,15 +95,29 @@ class StandXAdapter:
             logger.exception("处理 depth_book 数据失败: %s", e)
 
     async def subscribe_depth_book(self, symbol: str = "BTC-USD"):
+        """
+        订阅深度数据频道
+        Args:
+            symbol (str): 交易对，默认 BTC-USD
+        """
         await self.subscribe_market(
             channel="depth_book", symbol=symbol, callback=self.on_depth_book
         )
 
     def get_depth_mid_price(self) -> Optional[float]:
+        """
+        获取当前中间价
+        Returns:
+            Optional[float]: 当前中间价
+        """
         return self._depth_mid_price
 
     async def on_order(self, data):
-        """处理 order 频道推送"""
+        """
+        处理 order 频道推送
+        Args:
+            data (dict): 订单推送数据
+        """
         try:
             if data.get("channel") == "order":
                 order_data = data.get("data", {})
@@ -105,7 +133,7 @@ class StandXAdapter:
                     order_data.get("fill_qty"),
                     order_data.get("fill_avg_price"),
                 )
-                # 将订单数据存储到 market_stream.orders 列表中
+                # 订单取消时移除订单，否则新增订单
                 for idx, order in enumerate(self._orders):
                     if order["id"] == order_data.get("id") and order_data.get("status") == "canceled":
                         self._orders.pop(idx)
@@ -113,6 +141,7 @@ class StandXAdapter:
                         logger.info("当前订单总数: %d", len(self._orders))
                         break
                 else:
+                    # 新增订单（如未取消且 id 不在当前订单列表中）
                     logger.info("新增订单 id=%s", order_data.get("id"))
                     self._orders.append(order_data)
                     logger.info("当前订单总数: %d", len(self._orders))
@@ -120,7 +149,11 @@ class StandXAdapter:
             logger.exception("处理 order 数据失败: %s", e)
 
     async def on_position(self, data):
-        """处理 position 频道推送"""
+        """
+        处理 position 频道推送
+        Args:
+            data (dict): 持仓推送数据
+        """
         try:
             if data.get("channel") == "position":
                 pos_data = data.get("data", {})
@@ -142,37 +175,77 @@ class StandXAdapter:
             logger.exception("处理 position 数据失败: %s", e)
             
     async def authenticate_and_subscribe_orders(self):
-        """认证并订阅订单频道"""
+        """
+        认证并订阅订单和持仓频道
+        Raises:
+            ValueError: ACCESS_TOKEN 未设置
+        """
+        if not os.getenv("ACCESS_TOKEN"):
+            raise ValueError("环境变量 ACCESS_TOKEN 未设置")
+
         await self.connect_market_stream()
-        await self.market_stream.authenticate(os.getenv("ACCESS_TOKEN") , [{"channel": "order"}, {"channel": "position"}])
+        await self.market_stream.authenticate(os.getenv("ACCESS_TOKEN"), [{"channel": "order"}, {"channel": "position"}])
         await self.market_stream.subscribe("order", callback=self.on_order)
         await self.market_stream.subscribe("position", callback=self.on_position)
 
     def get_buy_order_count(self) -> int:
+        """
+        获取买单数量
+        Returns:
+            int: 买单数量
+        """
         if self._orders:
             return sum(1 for order in self._orders if order["side"] == "buy")
         return 0
     
     def get_sell_order_count(self) -> int:
+        """
+        获取卖单数量
+        Returns:
+            int: 卖单数量
+        """
         if self._orders:
             return sum(1 for order in self._orders if order["side"] == "sell")
         return 0
     
     def get_buy_orders(self) -> list:
+        """
+        获取所有买单列表
+        Returns:
+            list: 买单列表
+        """
         if self._orders:
             return [order for order in self._orders if order["side"] == "buy"]
         return []
     
     def get_sell_orders(self) -> list:
+        """
+        获取所有卖单列表
+        Returns:
+            list: 卖单列表
+        """
         if self._orders:
             return [order for order in self._orders if order["side"] == "sell"]
         return []
     
-    def get_position(self) -> dict:
+    def get_position(self) -> Optional[dict]:
+        """
+        获取当前持仓信息
+        Returns:
+            Optional[dict]: 当前持仓数据，若无则为 None
+        """
         return self._position
     
     def is_price_updated_and_processed(self) -> bool:
+        """
+        判断中间价是否已处理
+        Returns:
+            bool: 是否已处理
+        """
         return self._price_updated_and_processed
     
     def mark_price_processed(self):
+        """
+        标记中间价已处理
+        """
         self._price_updated_and_processed = True
