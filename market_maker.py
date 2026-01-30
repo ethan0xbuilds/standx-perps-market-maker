@@ -38,9 +38,6 @@ class MarketMaker:
         target_bps: float = 7.5,
         min_bps: float = 7.0,
         max_bps: float = 10,
-        balance_threshold_1: float = 100.0,
-        balance_threshold_2: float = 50.0,
-        force_degraded_on_us_open: bool = False,
         notifier: Notifier = None,
         exchange_adapter: StandXAdapter = None,
     ):
@@ -71,25 +68,10 @@ class MarketMaker:
             os.getenv("REORDER_NOTIFY_THROTTLE_SECONDS", "3600")
         )
 
-        # 原始配置（正常模式）
-        self.default_target_bps = target_bps
-        self.default_min_bps = min_bps
-        self.default_max_bps = max_bps
-
-        # 当前生效的配置（会根据余额动态调整）
+        # 挂单参数（静态）
         self.target_bps = target_bps
         self.min_bps = min_bps
         self.max_bps = max_bps
-
-        # 余额降级阈值
-        self.balance_threshold_1 = balance_threshold_1
-        self.balance_threshold_2 = balance_threshold_2
-
-        # 美股开盘时段强制降级开关
-        self.force_degraded_on_us_open = force_degraded_on_us_open
-
-        # 当前模式："normal", "degraded_1", "degraded_2"
-        self.current_mode = "normal"
 
         self.leverage = 40  # 杠杆倍数
         self.margin_mode = "isolated"  # 单仓模式
@@ -107,86 +89,6 @@ class MarketMaker:
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
 
-    def _is_us_market_open(self) -> bool:
-        """判断当前是否美股开盘时间（美东时间 09:30-16:15，周一-周五，包含收盘后15分钟缓冲）"""
-        try:
-            # 获取美东时间（EST/EDT，自动处理冬夏令时）
-            eastern = ZoneInfo("America/New_York")
-            now = datetime.now(eastern)
-
-            # 检查是否工作日（0=周一，6=周日）
-            if now.weekday() >= 5:  # 周六、周日
-                return False
-
-            # 检查是否在 09:30-16:15 之间（包含收盘后15分钟缓冲，应对BTC波动）
-            market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-            market_close = now.replace(hour=16, minute=15, second=0, microsecond=0)
-
-            return market_open <= now < market_close
-        except Exception as e:
-            logger.warning("美股开盘时间判断失败: %s", e)
-            return False
-
-    async def check_and_update_mode(self) -> bool:
-        """
-        检查余额并更新做市模式
-        优先检查美股开盘时段，其次检查余额
-
-        Returns:
-            True if mode changed, False otherwise
-        """
-        try:
-            old_mode = self.current_mode
-            reason = ""
-            new_mode = "normal"
-
-            # 检查美股开盘时段（如果启用）
-            if self.force_degraded_on_us_open and self._is_us_market_open():
-                new_mode = "degraded_2"
-                self.target_bps = 80
-                self.min_bps = 70
-                self.max_bps = 95
-                reason = "美股开盘时段（09:30-16:00 美东时间）"
-            else:
-                new_mode = "normal"
-                reason = "非美股开盘时段"
-
-            # 模式变化时打印日志并通知
-            if new_mode != old_mode:
-                self.current_mode = new_mode
-                mode_names = {
-                    "normal": "正常模式",
-                    "degraded_2": "降级模式2-止损",
-                }
-                logger.info(
-                    "模式切换 %s → %s",
-                    mode_names.get(old_mode, old_mode),
-                    mode_names.get(new_mode, new_mode),
-                )
-                logger.info("原因: %s", reason)
-                logger.info(
-                    "新挂单策略: target=%s bps, 范围=[%s, %s]",
-                    self.target_bps,
-                    self.min_bps,
-                    self.max_bps,
-                )
-
-                # 发送通知
-                notify_msg = (
-                    f"交易对: `{self.symbol}`\n"
-                    f"{mode_names.get(old_mode, old_mode)} → {mode_names.get(new_mode, new_mode)}\n\n"
-                    f"原因: {reason}\n"
-                    f"新策略: target={self.target_bps} bps, 范围=[{self.min_bps}, {self.max_bps}]"
-                )
-                await self.notifier.send(notify_msg)
-
-                return True
-
-            return False
-
-        except Exception as e:
-            logger.exception("模式更新失败: %s，使用当前模式继续", e)
-            return False
 
     def get_current_price(self) -> float:
         """获取当前市场价格（通过配置的价格提供者）"""
@@ -404,13 +306,12 @@ class MarketMaker:
         Args:
             check_interval: 检查间隔（秒，默认0.5秒）
         """
+
         beijing_tz = ZoneInfo("Asia/Shanghai")
         beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
         logger.info("双向限价单做市策略启动 - %s", beijing_time)
         logger.info("交易对: %s", self.symbol)
         logger.info("订单数量: %s", self.qty)
-        logger.info("余额阈值1（手续费容忍）: %s USDT", self.balance_threshold_1)
-        logger.info("余额阈值2（止损）: %s USDT", self.balance_threshold_2)
         logger.info("检查间隔: %s 秒", check_interval)
 
         # 启动通知
@@ -419,18 +320,6 @@ class MarketMaker:
             f"时间: {beijing_time}\n"
             f"交易对: `{self.symbol}`\n"
             f"数量: {self.qty}\n"
-            f"阈值: {self.balance_threshold_1}/{self.balance_threshold_2} USDT"
-        )
-
-        # 初始化：检查余额并确定模式
-        logger.info("检查余额并确定运行模式...")
-        await self.check_and_update_mode()
-        logger.info("当前模式: %s", self.current_mode)
-        logger.info(
-            "挂单策略: target=%s bps, 范围=[%s, %s]",
-            self.target_bps,
-            self.min_bps,
-            self.max_bps,
         )
 
         # 等待 mid_price 数据就绪（只执行一次）
@@ -457,8 +346,6 @@ class MarketMaker:
                             await self.close_position(
                                 self.exchange_adapter._depth_mid_price
                             )
-                            # 平仓后检查余额并更新模式
-                            await self.check_and_update_mode()
                         except Exception as e:
                             logger.exception("平仓失败: %s，下次迭代重试...", e)
                         continue
@@ -585,20 +472,12 @@ async def main():
     min_bps = float(os.getenv("MARKET_MAKER_MIN_BPS", "7.0"))
     max_bps = float(os.getenv("MARKET_MAKER_MAX_BPS", "10"))
 
-    # 余额降级阈值
-    balance_threshold_1 = float(os.getenv("MARKET_MAKER_BALANCE_THRESHOLD_1", "100"))
-    balance_threshold_2 = float(os.getenv("MARKET_MAKER_BALANCE_THRESHOLD_2", "50"))
 
     # 监控间隔
     check_interval = float(os.getenv("MARKET_MAKER_CHECK_INTERVAL", "0.0"))
 
     # 价格数据源
     price_source = os.getenv("MARKET_MAKER_PRICE_SOURCE", "http").lower()
-
-    # 美股开盘时段强制降级
-    force_degraded_on_us_open = (
-        os.getenv("MARKET_MAKER_FORCE_DEGRADED_ON_US_OPEN", "false").lower() == "true"
-    )
 
     # 认证
     logger.info("认证中...")
@@ -648,9 +527,6 @@ async def main():
         target_bps=target_bps,
         min_bps=min_bps,
         max_bps=max_bps,
-        balance_threshold_1=balance_threshold_1,
-        balance_threshold_2=balance_threshold_2,
-        force_degraded_on_us_open=force_degraded_on_us_open,
         notifier=notifier,
         exchange_adapter=standx_adapter,
     )
