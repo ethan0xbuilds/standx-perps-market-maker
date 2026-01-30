@@ -99,11 +99,10 @@ class MarketMaker:
             True if closed successfully, False otherwise
         """
         try:
-            positions = await api.query_positions(self.auth, symbol=self.symbol)
-            if not positions:
+            position = self.exchange_adapter.get_position()
+            if not position:
                 return True
 
-            position = positions[0]
             qty_str = position.get("qty")
             side = position.get("side")  # 可能为 None
             margin_mode = position.get("margin_mode")
@@ -161,13 +160,11 @@ class MarketMaker:
             start = time.time()
             while time.time() - start < 30:
                 await asyncio.sleep(1)
-                latest_positions = await api.query_positions(
-                    self.auth, symbol=self.symbol
-                )
-                if not latest_positions:
+                position = self.exchange_adapter.get_position()
+                if not position:
                     logger.info("持仓已清空")
                     return True
-                latest_qty = float(latest_positions[0].get("qty") or 0)
+                latest_qty = float(position.get("qty") or 0)
                 if latest_qty == 0:
                     logger.info("持仓数量为 0（已平仓）")
                     # 平仓成功通知
@@ -326,9 +323,8 @@ class MarketMaker:
                     break
 
                 # 第1步：检查持仓，存在则平仓
-                positions = self.exchange_adapter.get_position()
-                if positions:
-                    position = positions[0]
+                position = self.exchange_adapter.get_position()
+                if position:
                     qty = position.get("qty")
                     if qty and float(qty) != 0:
                         logger.info("检测到持仓 (qty=%s)，立即平仓...", qty)
