@@ -18,7 +18,6 @@ from adapter.standx_adapter import StandXAdapter
 from api.ws_client import StandXMarketStream
 from standx_auth import StandXAuth
 import standx_api as api
-from price_providers import create_price_provider
 from notifier import Notifier
 from logger import get_logger
 
@@ -88,15 +87,6 @@ class MarketMaker:
 
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
-
-
-    def get_current_price(self) -> float:
-        """获取当前市场价格（通过配置的价格提供者）"""
-        try:
-            return self.price_provider.get_current_price()
-        except Exception as e:
-            logger.warning("获取价格失败: %s，将在下次迭代重试", e)
-            raise
 
     async def close_position(self, market_price: float) -> bool:
         """

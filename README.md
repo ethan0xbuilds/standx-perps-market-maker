@@ -11,7 +11,6 @@
 - **核心模块**：
   - [standx_auth.py](standx_auth.py)：钱包认证与 HTTP 工具
   - [standx_api.py](standx_api.py)：HTTP API 方法库（9 个函数）
-  - [price_providers.py](price_providers.py)：价格数据源适配器（HTTP/WebSocket）
   - [market_maker.py](market_maker.py)：做市策略主程序
 - 做市策略：可配置监控间隔，三步流程（检查持仓 → 检查价格偏离 → 重挂订单）
 - 价格获取：支持 HTTP 轮询和 WebSocket 实时推送两种模式
@@ -344,11 +343,6 @@ python tests/test_notification.py
   - 9 个函数：query_balance、query_symbol_price、query_positions
   - 订单函数：new_limit_order、new_market_order、cancel_order
   - 查询函数：query_order、query_open_orders、query_orders
-- 价格数据源：[price_providers.py](price_providers.py)（233 行）
-  - PriceProvider 抽象接口
-  - HttpPriceProvider：通过 REST API 获取价格
-  - WebSocketPriceProvider：通过 WebSocket 实时推送
-  - 工厂函数：create_price_provider()
 - 通知模块：[notifier.py](notifier.py)（~70 行）
   - Telegram 通知器，支持时间限流防刷屏
 - 依赖列表：[requirements.txt](requirements.txt)
