@@ -447,7 +447,7 @@ class MarketMaker:
                     break
 
                 # 第1步：检查持仓，存在则平仓
-                positions = await api.query_positions(self.auth, symbol=self.symbol)
+                positions = self.exchange_adapter.get_position()
                 if positions:
                     position = positions[0]
                     qty = position.get("qty")
@@ -484,6 +484,7 @@ class MarketMaker:
                 if (
                     self.exchange_adapter.get_buy_orders()
                     and self.exchange_adapter.get_sell_orders()
+                    and not self.exchange_adapter.is_price_updated_and_processed()
                 ):
                     buy_price = float(
                         self.exchange_adapter.get_buy_orders()[0]["price"]
@@ -516,6 +517,7 @@ class MarketMaker:
                     ):
                         need_replace = True
                         reason = f"订单偏离范围异常（买单: {buy_bps:.1f} bps, 卖单: {sell_bps:.1f} bps）"
+                    self.exchange_adapter.mark_price_processed()
 
                 if need_replace:
                     logger.info("订单需重挂，原因: %s", reason)

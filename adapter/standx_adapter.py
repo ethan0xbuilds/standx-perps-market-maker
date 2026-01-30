@@ -13,9 +13,9 @@ class StandXAdapter:
         self.market_stream: Optional[StandXMarketStream] = None
         self._depth_mid_price: float = None
         self._last_price_update_time: float = None
+        self._price_updated_and_processed: bool = True
         self._orders = []
-        self._buy_orders = []
-        self._sell_orders = []
+        self._position = []
 
     async def connect_market_stream(self) -> StandXMarketStream:
         """连接市场 WebSocket（公共频道无需认证）"""
@@ -76,6 +76,7 @@ class StandXAdapter:
                             time_diff,
                         )
                         self._last_price_update_time = time.time()
+                        self._price_updated_and_processed = False
         except Exception as e:
             logger.exception("处理 depth_book 数据失败: %s", e)
 
@@ -118,27 +119,44 @@ class StandXAdapter:
         except Exception as e:
             logger.exception("处理 order 数据失败: %s", e)
 
+    async def on_position(self, data):
+        """处理 position 频道推送"""
+        try:
+            if data.get("channel") == "position":
+                pos_data = data.get("data", {})
+                logger.info(
+                    "持仓推送: id=%s, symbol=%s, qty=%s, entry_price=%s, leverage=%s, margin_mode=%s, status=%s, realized_pnl=%s",
+                    pos_data.get("id"),
+                    pos_data.get("symbol"),
+                    pos_data.get("qty"),
+                    pos_data.get("entry_price"),
+                    pos_data.get("leverage"),
+                    pos_data.get("margin_mode"),
+                    pos_data.get("status"),
+                    pos_data.get("realized_pnl"),
+                )
+                self._position = pos_data
+                logger.info("当前持仓数据已更新")
+                logger.debug("当前持仓详情: %s", self._position)
+        except Exception as e:
+            logger.exception("处理 position 数据失败: %s", e)
+            
     async def authenticate_and_subscribe_orders(self):
         """认证并订阅订单频道"""
         await self.connect_market_stream()
-        await self.market_stream.authenticate(os.getenv("ACCESS_TOKEN") , [{"channel": "order"}])
+        await self.market_stream.authenticate(os.getenv("ACCESS_TOKEN") , [{"channel": "order"}, {"channel": "position"}])
         await self.market_stream.subscribe("order", callback=self.on_order)
+        await self.market_stream.subscribe("position", callback=self.on_position)
 
     def get_buy_order_count(self) -> int:
         if self._orders:
             return sum(1 for order in self._orders if order["side"] == "buy")
         return 0
     
-    def get_order_count(self) -> int:
-        return len(self._orders) if self._orders else 0
-
     def get_sell_order_count(self) -> int:
         if self._orders:
             return sum(1 for order in self._orders if order["side"] == "sell")
         return 0
-    
-    def get_orders(self) -> list:
-        return self._orders if self._orders else []
     
     def get_buy_orders(self) -> list:
         if self._orders:
@@ -149,3 +167,12 @@ class StandXAdapter:
         if self._orders:
             return [order for order in self._orders if order["side"] == "sell"]
         return []
+    
+    def get_position(self) -> dict:
+        return self._position
+    
+    def is_price_updated_and_processed(self) -> bool:
+        return self._price_updated_and_processed
+    
+    def mark_price_processed(self):
+        self._price_updated_and_processed = True
