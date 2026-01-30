@@ -53,17 +53,29 @@ class StandXAdapter:
                 else:
                     mid_price = None
 
-                if mid_price is not None and mid_price != self._depth_mid_price:
-                    self._depth_mid_price = mid_price
-                    # 计算新价格距离上次价格更新的时间间隔
+                if mid_price is not None:
+
+                    time_diff = 0.0
                     if self._last_price_update_time is not None:
+                        # 计算新价格距离上次价格更新的时间间隔
                         time_diff = time.time() - self._last_price_update_time
+
+                    if mid_price == self._depth_mid_price:
+                        # 中间价未变，打印DEBUG日志表示接收到数据但价格未变
+                        logger.debug(
+                            "Depth book 中间价未变: %.4f, 距上次更新 %.2f 秒",
+                            mid_price,
+                            time_diff,
+                        )
+                        return
+                    else:
+                        self._depth_mid_price = mid_price
                         logger.info(
                             "Depth book 中间价更新: %.4f, 距上次更新 %.2f 秒",
                             mid_price,
                             time_diff,
                         )
-                    self._last_price_update_time = time.time()
+                        self._last_price_update_time = time.time()
         except Exception as e:
             logger.exception("处理 depth_book 数据失败: %s", e)
 
