@@ -27,7 +27,7 @@ class StandXAdapter:
         self._last_price_update_time: Optional[float] = None
         self._price_updated_and_processed: bool = True
         self._orders: list = []
-        self._positions: Optional[list] = []
+        self._position: Optional[dict] = {}
         self._order_confirmed_count: int = 0  # 追踪订单确认次数，用于等待机制
 
     async def connect_market_stream(self) -> StandXMarketStream:
@@ -188,9 +188,7 @@ class StandXAdapter:
                     pos_data.get("status"),
                     pos_data.get("realized_pnl"),
                 )
-                self._positions.append(pos_data)
-                # logger.debug("当前持仓详情: %s", self._positions)
-                logger.warning("当前持仓详情: %s", self._positions)
+                self._position = pos_data
         except Exception as e:
             logger.exception("处理 position 数据失败: %s", e)
 
@@ -250,26 +248,15 @@ class StandXAdapter:
             return [order for order in self._orders if order["side"] == "sell"]
         return []
 
-    async def get_positions(self, symbol: Optional[str] = None) -> list:
+    async def get_position(self, symbol: Optional[str] = None) -> list:
         """
-        获取当前持仓信息
+        获取当前持仓信息（来自 WebSocket 最新推送）
         Args:
-            symbol (Optional[str]): 交易对，若提供则过滤
+            symbol (Optional[str]): 交易对占位参数（当前实现未使用）
         Returns:
-            list: 当前持仓列表，若无则为 []
+            dict: 最新持仓信息，未收到推送时为 {}
         """
-        positions: list = []
-
-        if self._positions:
-            positions = list(self._positions)
-        elif self._order_stream and self._order_stream.auth:
-            positions = await query_positions(self._order_stream.auth, symbol=symbol)
-
-        if symbol:
-            positions = [pos for pos in positions if pos.get("symbol") == symbol]
-
-        self._positions = positions
-        return positions
+        return self._position
 
     def is_price_updated_and_processed(self) -> bool:
         """
@@ -435,35 +422,29 @@ class StandXAdapter:
         Args:
             symbol (str): 交易对
         """
-        # positions = await self.get_positions(symbol=symbol) # TODO：暂时注释通过HTTP获取持仓
-        positions = self._positions or []
-        has_position = False
+        position = await self.get_position(symbol)
 
-        for position in positions:
-            if not position:
-                continue
-            qty_value = float(position.get("qty", 0))
-            if qty_value == 0:
-                continue
+        if not position:
+            return
+        
+        qty_value = float(position.get("qty", 0))
+        if qty_value == 0:
+            return
+        
+        side = "sell" if qty_value > 0 else "buy"
+        qty = str(abs(qty_value))
 
-            has_position = True
-            side = "sell" if qty_value > 0 else "buy"
-            qty = str(abs(qty_value))
+        logger.info(
+            "准备通过市价单平仓: symbol=%s, side=%s, qty=%s",
+            symbol,
+            side,
+            qty,
+        )
 
-            logger.info(
-                "准备通过市价单平仓: symbol=%s, side=%s, qty=%s",
-                symbol,
-                side,
-                qty,
-            )
-
-            await self.new_order(
-                symbol=symbol,
-                side=side,
-                order_type="market",
-                qty=qty,
-                reduce_only=True,
-            )
-
-        if not has_position:
-            logger.debug("当前无持仓，无需平仓")
+        await self.new_order(
+            symbol=symbol,
+            side=side,
+            order_type="market",
+            qty=qty,
+            reduce_only=True,
+        )
