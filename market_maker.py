@@ -272,8 +272,18 @@ class MarketMaker:
 
                 if need_replace:
                     logger.info("订单需重挂，原因: %s", reason)
+                    
+                    # 取消所有订单并等待确认
                     await self.cancel_all_orders()
+                    cancel_success = await self.exchange_adapter.wait_for_order_count(0, 0, timeout=3.0)
+                    if not cancel_success:
+                        logger.warning("订单取消确认超时，继续下单")
+                    
+                    # 下单并等待确认
                     await self.place_orders(self.exchange_adapter.get_depth_mid_price())
+                    order_success = await self.exchange_adapter.wait_for_orders(count=2, timeout=5.0)
+                    if not order_success:
+                        logger.warning("订单下单确认超时，将在下次循环检查")
 
                     # 订单重挂通知：按原因前缀（冒号前）去重 1 小时
                     reason_key = (reason or "reorder").split(":", 1)[0].strip()

@@ -26,6 +26,7 @@ class StandXAdapter:
         self._orders: list = []
         self._position: Optional[dict] = None
         self._positions: Optional[list] = None
+        self._order_confirmed_count: int = 0  # 追踪订单确认次数，用于等待机制
 
     async def connect_market_stream(self) -> StandXMarketStream:
         """
@@ -160,6 +161,7 @@ class StandXAdapter:
                     # 新增订单（如未取消且 id 不在当前订单列表中）
                     logger.info("新增订单 id=%s", order_data.get("id"))
                     self._orders.append(order_data)
+                    self._order_confirmed_count += 1  # 订单确认计数+1
                     logger.info("当前订单总数: %d", len(self._orders))
         except Exception as e:
             logger.exception("处理 order 数据失败: %s", e)
@@ -282,6 +284,72 @@ class StandXAdapter:
         标记中间价已处理
         """
         self._price_updated_and_processed = True
+
+    async def wait_for_orders(self, count: int = 2, timeout: float = 5.0) -> bool:
+        """
+        等待指定数量的新订单确认（通过WebSocket回调）
+        Args:
+            count: 等待的订单数量
+            timeout: 超时时间（秒）
+        Returns:
+            bool: 是否在超时前收到所有订单确认
+        """
+        initial_count = self._order_confirmed_count
+        target_count = initial_count + count
+        
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if self._order_confirmed_count >= target_count:
+                logger.info(
+                    "订单确认完成: 已确认 %d 个订单，耗时 %.2f 秒",
+                    count,
+                    time.time() - start_time,
+                )
+                return True
+            await asyncio.sleep(0.05)  # 50ms检查一次
+        
+        logger.warning(
+            "订单确认超时: 期望 %d 个，实际收到 %d 个，耗时 %.2f 秒",
+            count,
+            self._order_confirmed_count - initial_count,
+            timeout,
+        )
+        return False
+
+    async def wait_for_order_count(self, target_buy: int, target_sell: int, timeout: float = 5.0) -> bool:
+        """
+        等待订单数量达到目标值（用于等待订单取消）
+        Args:
+            target_buy: 目标买单数量
+            target_sell: 目标卖单数量
+            timeout: 超时时间（秒）
+        Returns:
+            bool: 是否在超时前达到目标
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if (
+                self.get_buy_order_count() == target_buy
+                and self.get_sell_order_count() == target_sell
+            ):
+                logger.info(
+                    "订单数量达到目标: 买单 %d, 卖单 %d，耗时 %.2f 秒",
+                    target_buy,
+                    target_sell,
+                    time.time() - start_time,
+                )
+                return True
+            await asyncio.sleep(0.05)  # 50ms检查一次
+        
+        logger.warning(
+            "等待订单数量超时: 目标(买%d/卖%d), 实际(买%d/卖%d), 耗时 %.2f 秒",
+            target_buy,
+            target_sell,
+            self.get_buy_order_count(),
+            self.get_sell_order_count(),
+            timeout,
+        )
+        return False
 
     def on_login(self, data):
         """
