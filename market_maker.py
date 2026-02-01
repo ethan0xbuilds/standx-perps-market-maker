@@ -83,7 +83,7 @@ class MarketMaker:
         """设置信号处理器以支持优雅关闭"""
 
         def handle_signal(signum, frame):
-            self.self.logger.info("收到信号 %s，准备优雅关闭...", signum)
+            self.logger.info("收到信号 %s，准备优雅关闭...", signum)
             self._shutdown_requested = True
 
         signal.signal(signal.SIGTERM, handle_signal)
@@ -250,6 +250,9 @@ class MarketMaker:
         Args:
             check_interval: 检查间隔（秒，默认0.5秒）
         """
+        
+        # 设置信号处理器
+        self._setup_signal_handlers()
 
         beijing_tz = ZoneInfo("Asia/Shanghai")
         beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
