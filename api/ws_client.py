@@ -1,11 +1,15 @@
+# 标准库导入
 import asyncio
 import json
 import uuid
 import time
 from typing import Dict, Any, Optional, Callable, List
+
+# 第三方库导入
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+# 本地模块导入
 from logger import get_logger
 from standx_auth import StandXAuth
 

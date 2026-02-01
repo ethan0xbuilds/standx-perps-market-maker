@@ -3,10 +3,13 @@ Telegram 通知模块
 支持时间限流，防止高频事件刷屏
 """
 
+# 标准库导入
 import os
 import time
-import requests
 from typing import Optional
+
+# 第三方库导入
+import requests
 
 
 class Notifier:

@@ -5,25 +5,25 @@
 - 订单偏离超过阈值时取消并重新挂单
 """
 
+# 首先加载环境变量，必须在其他模块导入之前
+from dotenv import load_dotenv
+load_dotenv()
+
+# 标准库导入
 import asyncio
 import os
-import time
 import signal
 from datetime import datetime
-from typing import Optional
 from zoneinfo import ZoneInfo
-from dotenv import load_dotenv
-from adapter import standx_adapter
+
+# 本地模块导入
 from adapter.standx_adapter import StandXAdapter
-from api.ws_client import StandXMarketStream
 from standx_auth import StandXAuth
 import standx_api as api
 from notifier import Notifier
 from logger import get_logger
 
 logger = get_logger(__name__)
-
-load_dotenv()
 
 
 class MarketMaker:
@@ -143,7 +143,7 @@ class MarketMaker:
                 leverage=self.leverage,
             )
             logger.info(
-                "卖单: %s @ %.2f",      
+                "卖单: %s @ %.2f",
                 self.qty,
                 sell_price,
             )
@@ -272,16 +272,20 @@ class MarketMaker:
 
                 if need_replace:
                     logger.info("订单需重挂，原因: %s", reason)
-                    
+
                     # 取消所有订单并等待确认
                     await self.cancel_all_orders()
-                    cancel_success = await self.exchange_adapter.wait_for_order_count(0, 0, timeout=3.0)
+                    cancel_success = await self.exchange_adapter.wait_for_order_count(
+                        0, 0, timeout=3.0
+                    )
                     if not cancel_success:
                         logger.warning("订单取消确认超时，继续下单")
-                    
+
                     # 下单并等待确认
                     await self.place_orders(self.exchange_adapter.get_depth_mid_price())
-                    order_success = await self.exchange_adapter.wait_for_orders(count=2, timeout=5.0)
+                    order_success = await self.exchange_adapter.wait_for_orders(
+                        count=2, timeout=5.0
+                    )
                     if not order_success:
                         logger.warning("订单下单确认超时，将在下次循环检查")
 

@@ -3,22 +3,26 @@ StandX Perps API Authentication Module (BSC Chain)
 Implements wallet-based signature authentication with Ed25519 and Ethereum signing
 """
 
+# 标准库导入
 import os
 import json
 import base64
 import time
 import uuid
+from functools import wraps
+from typing import Dict
+
+# 第三方库导入
 import requests
 import jwt
-from functools import wraps
-from dotenv import load_dotenv
 from eth_account import Account
 from eth_account.messages import encode_defunct
 from base58 import b58encode, b58decode
 from nacl.signing import SigningKey
 from nacl.utils import random
+
+# 本地模块导入
 from logger import get_logger
-from typing import Dict
 
 logger = get_logger(__name__)
 
@@ -27,9 +31,6 @@ PREPARE_SIGNIN_URL = "https://api.standx.com/v1/offchain/prepare-signin"
 LOGIN_URL = "https://api.standx.com/v1/offchain/login"
 PERPS_BASE_URL = "https://perps.standx.com"
 CHAIN = "bsc"
-
-# Load environment variables
-load_dotenv()
 
 # Network configuration
 DEFAULT_TIMEOUT = 30  # 增加超时时间到30秒
