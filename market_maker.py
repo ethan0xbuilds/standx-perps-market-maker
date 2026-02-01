@@ -37,6 +37,7 @@ class MarketMaker:
         max_bps: float = 10,
         notifier: Notifier = None,
         exchange_adapter: StandXAdapter = None,
+        account_name: str = None,
     ):
         """
         初始化做市器
@@ -57,6 +58,7 @@ class MarketMaker:
         self.symbol = symbol
         self.qty = qty
         self.exchange_adapter = exchange_adapter
+        self.account_name = account_name or "default"
 
         # 通知器
         self.notifier = notifier or Notifier.from_env()
@@ -264,6 +266,7 @@ class MarketMaker:
         # 启动通知
         await self.notifier.send(
             f"*做市策略启动*\n"
+            f"账户: `{self.account_name}`\n"
             f"时间: {beijing_time}\n"
             f"交易对: `{self.symbol}`\n"
             f"数量: {self.qty}\n"
@@ -308,30 +311,19 @@ class MarketMaker:
                     if not order_success:
                         self.logger.warning("订单下单确认超时，将在下次循环检查")
 
-                    # 订单重挂通知：按原因前缀（冒号前）去重 1 小时
-                    reason_key = (reason or "reorder").split(":", 1)[0].strip()
-                    notify_msg = (
-                        f"*订单重挂*\n"
-                        f"交易对: `{self.symbol}`\n"
-                        f"市价: {self.exchange_adapter.get_depth_mid_price():.2f}\n"
-                        f"原因: {reason}"
-                    )
-                    # 使用 Notifier 的限流（相同 reason_key 在窗口内只发一次）
-                    await self.notifier.send(notify_msg, throttle_key=reason_key)
-
                 # 等待下一个检查周期
                 await asyncio.sleep(check_interval)
 
         except KeyboardInterrupt:
             self.logger.info("收到中断信号，停止策略...")
             await self.notifier.send(
-                f"*策略停止*\n" f"交易对: `{self.symbol}`\n" f"原因: 收到中断信号"
+                f"*策略停止*\n" f"账户: `{self.account_name}`\n" f"交易对: `{self.symbol}`\n" f"原因: 收到中断信号"
             )
         except Exception as e:
             self.logger.exception("策略运行出现严重错误: %s", e)
             self.logger.info("正在清理订单并退出...")
             await self.notifier.send(
-                f"*致命异常*\n" f"交易对: `{self.symbol}`\n" f"错误: {e}"
+                f"*致命异常*\n" f"账户: `{self.account_name}`\n" f"交易对: `{self.symbol}`\n" f"错误: {e}"
             )
 
     async def cleanup(self):
@@ -407,7 +399,8 @@ async def main():
         logger.info("认证成功")
     except Exception as e:
         logger.exception("认证失败: %s", e)
-        await notifier.send(f"❌ *认证失败*\n" f"交易对: `{symbol}`\n" f"错误: {e}")
+        account_name = args.log_prefix or symbol
+        await notifier.send(f"❌ *认证失败*\n" f"账户: `{account_name}`\n" f"交易对: `{symbol}`\n" f"错误: {e}")
         raise
 
     # 创建 StandX 适配器
@@ -417,6 +410,8 @@ async def main():
     await standx_adapter.connect_order_stream(auth)
 
     # 创建做市器
+    # 从log_prefix获取账户名
+    account_name = args.log_prefix
     market_maker = MarketMaker(
         auth=auth,
         symbol=symbol,
@@ -426,6 +421,7 @@ async def main():
         max_bps=max_bps,
         notifier=notifier,
         exchange_adapter=standx_adapter,
+        account_name=account_name,
     )
     
     try:
@@ -440,7 +436,7 @@ async def main():
         
         # 停止通知
         await notifier.send(
-            f"*做市策略已停止*\n" f"交易对: `{symbol}`\n" f"订单已清理完成"
+            f"*做市策略已停止*\n" f"账户: `{account_name}`\n" f"交易对: `{symbol}`\n" f"订单已清理完成"
         )
 
 
