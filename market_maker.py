@@ -102,6 +102,72 @@ class MarketMaker:
         sell_price = market_price * (1 + self.target_bps / 10000)
         return (buy_price, sell_price)
 
+    def check_order_count(self) -> tuple[bool, str]:
+        """
+        检查订单数量是否正确
+        
+        Returns:
+            (need_replace, reason) 是否需要重挂和原因
+        """
+        if (
+            self.exchange_adapter.get_buy_order_count() != 1
+            or self.exchange_adapter.get_sell_order_count() != 1
+        ):
+            logger.info(
+                "订单数量异常，买单: %d, 卖单: %d",
+                self.exchange_adapter.get_buy_order_count(),
+                self.exchange_adapter.get_sell_order_count(),
+            )
+            reason = "订单数量异常（非各1单）"
+            return True, reason
+        return False, ""
+
+    def check_price_deviation(self) -> tuple[bool, str]:
+        """
+        检查订单偏离度是否超过阈值
+        
+        Returns:
+            (need_replace, reason) 是否需要重挂和原因
+        """
+        if not (
+            self.exchange_adapter.get_buy_orders()
+            and self.exchange_adapter.get_sell_orders()
+            and not self.exchange_adapter.is_price_updated_and_processed()
+        ):
+            return False, ""
+        
+        buy_price = float(self.exchange_adapter.get_buy_orders()[0]["price"])
+        buy_bps = abs(
+            (self.exchange_adapter.get_depth_mid_price() - buy_price)
+            / self.exchange_adapter.get_depth_mid_price()
+            * 10000
+        )
+        sell_price = float(self.exchange_adapter.get_sell_orders()[0]["price"])
+        sell_bps = abs(
+            (sell_price - self.exchange_adapter.get_depth_mid_price())
+            / self.exchange_adapter.get_depth_mid_price()
+            * 10000
+        )
+        logger.info(
+            "买单: %.2f (偏离: %.1f bps), 卖单: %.2f (偏离: %.1f bps)",
+            buy_price,
+            buy_bps,
+            sell_price,
+            sell_bps,
+        )
+        
+        if (
+            buy_bps < self.min_bps
+            or buy_bps > self.max_bps
+            or sell_bps < self.min_bps
+            or sell_bps > self.max_bps
+        ):
+            reason = f"订单偏离范围异常（买单: {buy_bps:.1f} bps, 卖单: {sell_bps:.1f} bps）"
+            return True, reason
+        
+        self.exchange_adapter.mark_price_processed()
+        return False, ""
+
     async def place_orders(self, market_price: float):
         """下双向限价单"""
         buy_price, sell_price = self.calculate_order_prices(market_price)
@@ -215,60 +281,9 @@ class MarketMaker:
                 await self.exchange_adapter.close_position(symbol=self.symbol)
 
                 # 检查订单状态和偏离度
-                need_replace = False
-                reason = ""
-
-                # 检查订单数量是否正确
-                if (
-                    self.exchange_adapter.get_buy_order_count() != 1
-                    or self.exchange_adapter.get_sell_order_count() != 1
-                ):
-                    logger.info(
-                        "订单数量异常，买单: %d, 卖单: %d",
-                        self.exchange_adapter.get_buy_order_count(),
-                        self.exchange_adapter.get_sell_order_count(),
-                    )
-                    reason = "订单数量异常（非各1单）"
-                    logger.info("订单需重挂，原因: %s", reason)
-                    need_replace = True
-
-                if (
-                    self.exchange_adapter.get_buy_orders()
-                    and self.exchange_adapter.get_sell_orders()
-                    and not self.exchange_adapter.is_price_updated_and_processed()
-                ):
-                    buy_price = float(
-                        self.exchange_adapter.get_buy_orders()[0]["price"]
-                    )
-                    buy_bps = abs(
-                        (self.exchange_adapter.get_depth_mid_price() - buy_price)
-                        / self.exchange_adapter.get_depth_mid_price()
-                        * 10000
-                    )
-                    sell_price = float(
-                        self.exchange_adapter.get_sell_orders()[0]["price"]
-                    )
-                    sell_bps = abs(
-                        (sell_price - self.exchange_adapter.get_depth_mid_price())
-                        / self.exchange_adapter.get_depth_mid_price()
-                        * 10000
-                    )
-                    logger.info(
-                        "买单: %.2f (偏离: %.1f bps), 卖单: %.2f (偏离: %.1f bps)",
-                        buy_price,
-                        buy_bps,
-                        sell_price,
-                        sell_bps,
-                    )
-                    if (
-                        buy_bps < self.min_bps
-                        or buy_bps > self.max_bps
-                        or sell_bps < self.min_bps
-                        or sell_bps > self.max_bps
-                    ):
-                        need_replace = True
-                        reason = f"订单偏离范围异常（买单: {buy_bps:.1f} bps, 卖单: {sell_bps:.1f} bps）"
-                    self.exchange_adapter.mark_price_processed()
+                need_replace, reason = self.check_order_count()
+                if not need_replace:
+                    need_replace, reason = self.check_price_deviation()
 
                 if need_replace:
                     logger.info("订单需重挂，原因: %s", reason)
