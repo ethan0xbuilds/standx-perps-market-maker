@@ -24,8 +24,7 @@ class StandXAdapter:
         self._last_price_update_time: Optional[float] = None
         self._price_updated_and_processed: bool = True
         self._orders: list = []
-        self._position: Optional[dict] = None
-        self._positions: Optional[list] = None
+        self._positions: Optional[list] = []
         self._order_confirmed_count: int = 0  # 追踪订单确认次数，用于等待机制
 
     async def connect_market_stream(self) -> StandXMarketStream:
@@ -112,7 +111,7 @@ class StandXAdapter:
         if not self._market_stream.connected:
             await self._market_stream.connect()
         if not self._market_stream.authenticated:
-            await self._authenticate()
+            await self._authenticate_and_subscribe()
 
         await self.subscribe_market(
             channel="depth_book", symbol=symbol, callback=self.on_depth_book
@@ -186,13 +185,13 @@ class StandXAdapter:
                     pos_data.get("status"),
                     pos_data.get("realized_pnl"),
                 )
-                self._position = pos_data
-                logger.info("当前持仓数据已更新")
-                logger.debug("当前持仓详情: %s", self._position)
+                self._positions.append(pos_data)
+                # logger.debug("当前持仓详情: %s", self._positions)
+                logger.warning("当前持仓详情: %s", self._positions)
         except Exception as e:
             logger.exception("处理 position 数据失败: %s", e)
 
-    async def _authenticate(self):
+    async def _authenticate_and_subscribe(self):
         """
         认证并订阅订单和持仓频道
         Raises:
@@ -260,8 +259,6 @@ class StandXAdapter:
 
         if self._positions:
             positions = list(self._positions)
-        elif self._position:
-            positions = [self._position]
         elif self._order_stream and self._order_stream.auth:
             positions = await query_positions(self._order_stream.auth, symbol=symbol)
 
@@ -435,7 +432,8 @@ class StandXAdapter:
         Args:
             symbol (str): 交易对
         """
-        positions = await self.get_positions(symbol=symbol)
+        # positions = await self.get_positions(symbol=symbol) # TODO：暂时注释通过HTTP获取持仓
+        positions = self._positions or []
         has_position = False
 
         for position in positions:
@@ -465,4 +463,4 @@ class StandXAdapter:
             )
 
         if not has_position:
-            logger.info("当前无持仓，无需平仓")
+            logger.debug("当前无持仓，无需平仓")
