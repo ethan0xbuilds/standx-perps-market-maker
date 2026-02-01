@@ -88,111 +88,6 @@ class MarketMaker:
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
 
-    async def close_position(self, market_price: float) -> bool:
-        """
-        平仓所有持仓（市价单）
-
-        Args:
-            market_price: 当前市场价格
-
-        Returns:
-            True if closed successfully, False otherwise
-        """
-        try:
-            position = self.exchange_adapter.get_position()
-            if not position:
-                return True
-
-            qty_str = position.get("qty")
-            side = position.get("side")  # 可能为 None
-            margin_mode = position.get("margin_mode")
-            leverage = (
-                int(position.get("leverage")) if position.get("leverage") else None
-            )
-
-            # 打印持仓详情便于调试
-            logger.debug(
-                "持仓详情: qty=%s, side=%s, margin_mode=%s, leverage=%s",
-                qty_str,
-                side,
-                margin_mode,
-                leverage,
-            )
-
-            if not qty_str or float(qty_str) == 0:
-                logger.info("持仓数量为 0，无需平仓")
-                return True
-
-            qty_f = float(qty_str)
-
-            # 判断平仓方向：StandX API 可能不返回 side 字段，需通过 qty 正负判断
-            if qty_f > 0:
-                # qty > 0 通常表示多头 (buy)，平仓用 sell
-                close_side = "sell"
-                qty_send = qty_str
-            elif qty_f < 0:
-                # qty < 0 通常表示空头 (sell)，平仓用 buy
-                close_side = "buy"
-                qty_send = f"{abs(qty_f):.4f}"
-            else:
-                logger.info("持仓数量为 0，无需平仓")
-                return True
-
-            logger.info("检测到持仓，立即平仓: %s %s", close_side, qty_send)
-
-            close_resp = await api.new_market_order(
-                self.auth,
-                symbol=self.symbol,
-                side=close_side,
-                qty=qty_send,
-                reduce_only=True,
-                margin_mode=margin_mode,
-                leverage=leverage,
-                time_in_force="ioc",
-            )
-
-            logger.info(
-                "平仓请求已提交 (request_id: %s)，验证中...",
-                close_resp.get("request_id"),
-            )
-
-            # 验证：轮询持仓是否已归零（最多30秒）
-            start = time.time()
-            while time.time() - start < 30:
-                await asyncio.sleep(1)
-                position = self.exchange_adapter.get_position()
-                if not position:
-                    logger.info("持仓已清空")
-                    return True
-                latest_qty = float(position.get("qty") or 0)
-                if latest_qty == 0:
-                    logger.info("持仓数量为 0（已平仓）")
-                    # 平仓成功通知
-                    await self.notifier.send(
-                        f"*平仓成功*\n"
-                        f"交易对: `{self.symbol}`\n"
-                        f"数量: {qty_str}\n"
-                        f"方向: {close_side}"
-                    )
-                    return True
-
-            logger.warning("超时：持仓仍未归零，稍后会在下一轮重试")
-            # 平仓超时通知
-            await self.notifier.send(
-                f"*平仓超时*\n"
-                f"交易对: `{self.symbol}`\n"
-                f"数量: {qty_str}\n"
-                f"持仓仍未归零，下一轮重试"
-            )
-            return False
-        except Exception as e:
-            logger.exception("平仓失败: %s", e)
-            # 平仓失败通知
-            await self.notifier.send(
-                f"*平仓失败*\n" f"交易对: `{self.symbol}`\n" f"错误: {e}"
-            )
-            return False
-
     def calculate_order_prices(self, market_price: float) -> tuple:
         """
         计算双向订单价格
@@ -215,10 +110,10 @@ class MarketMaker:
 
         # 下买单
         try:
-            buy_resp = await api.new_limit_order(
-                self.auth,
+            await self.exchange_adapter.new_order(
                 symbol=self.symbol,
                 side="buy",
+                order_type="limit",
                 qty=self.qty,
                 price=f"{buy_price:.2f}",
                 time_in_force="alo",
@@ -227,20 +122,19 @@ class MarketMaker:
                 leverage=self.leverage,
             )
             logger.info(
-                "买单: %s @ %.2f (request_id: %s)",
+                "买单: %s @ %.2f",
                 self.qty,
                 buy_price,
-                buy_resp.get("request_id"),
             )
         except Exception as e:
             logger.exception("买单失败: %s", e)
 
         # 下卖单
         try:
-            sell_resp = await api.new_limit_order(
-                self.auth,
+            await self.exchange_adapter.new_order(
                 symbol=self.symbol,
                 side="sell",
+                order_type="limit",
                 qty=self.qty,
                 price=f"{sell_price:.2f}",
                 time_in_force="alo",
@@ -249,16 +143,12 @@ class MarketMaker:
                 leverage=self.leverage,
             )
             logger.info(
-                "卖单: %s @ %.2f (request_id: %s)",
+                "卖单: %s @ %.2f",      
                 self.qty,
                 sell_price,
-                sell_resp.get("request_id"),
             )
         except Exception as e:
             logger.exception("卖单失败: %s", e)
-
-        # 等待订单生效（优化为1秒）
-        await asyncio.sleep(1)
 
     async def refresh_orders(self):
         """刷新当前订单状态"""
@@ -281,7 +171,7 @@ class MarketMaker:
         """取消所有订单"""
         for order in self.exchange_adapter._orders:
             try:
-                cancel_resp = await api.cancel_order(self.auth, order_id=order["id"])
+                await api.cancel_order(self.auth, order_id=order["id"])
                 logger.info("取消 %s 订单 @ %s", order["side"], order["price"])
             except Exception as e:
                 logger.exception("取消失败: %s", e)
@@ -322,21 +212,9 @@ class MarketMaker:
                     logger.info("收到关闭信号，停止策略")
                     break
 
-                # 第1步：检查持仓，存在则平仓
-                position = self.exchange_adapter.get_position()
-                if position:
-                    qty = position.get("qty")
-                    if qty and float(qty) != 0:
-                        logger.info("检测到持仓 (qty=%s)，立即平仓...", qty)
-                        try:
-                            await self.close_position(
-                                self.exchange_adapter._depth_mid_price
-                            )
-                        except Exception as e:
-                            logger.exception("平仓失败: %s，下次迭代重试...", e)
-                        continue
+                await self.exchange_adapter.close_position(symbol=self.symbol)
 
-                # 第2步：检查订单状态和偏离度
+                # 检查订单状态和偏离度
                 need_replace = False
                 reason = ""
 
@@ -407,7 +285,7 @@ class MarketMaker:
                     )
                     # 使用 Notifier 的限流（相同 reason_key 在窗口内只发一次）
                     await self.notifier.send(notify_msg, throttle_key=reason_key)
-                
+
                 # 等待下一个检查周期
                 await asyncio.sleep(check_interval)
 
@@ -458,7 +336,6 @@ async def main():
     min_bps = float(os.getenv("MARKET_MAKER_MIN_BPS", "7.0"))
     max_bps = float(os.getenv("MARKET_MAKER_MAX_BPS", "10"))
 
-
     # 监控间隔
     check_interval = float(os.getenv("MARKET_MAKER_CHECK_INTERVAL", "0.0"))
 
@@ -502,8 +379,7 @@ async def main():
     standx_adapter = StandXAdapter()
     # 订阅depth_book频道
     await standx_adapter.subscribe_depth_book(symbol="BTC-USD")
-    # 认证并订阅order频道
-    await standx_adapter.authenticate_and_subscribe_orders()
+    await standx_adapter.connect_order_stream(auth)
 
     # 创建做市器
     market_maker = MarketMaker(
@@ -525,7 +401,7 @@ async def main():
     await asyncio.sleep(5)  # 等待初始数据
     logger.info(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
-    await standx_adapter.market_stream.close()
+    await standx_adapter._market_stream.close()
 
 
 if __name__ == "__main__":

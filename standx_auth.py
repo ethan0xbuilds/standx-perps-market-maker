@@ -18,6 +18,7 @@ from base58 import b58encode, b58decode
 from nacl.signing import SigningKey
 from nacl.utils import random
 from logger import get_logger
+from typing import Dict
 
 logger = get_logger(__name__)
 
@@ -38,6 +39,7 @@ RETRY_DELAY = 1  # 重试延迟（秒）- 优化为1秒
 
 def retry_on_network_error(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
     """网络错误重试装饰器"""
+
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -45,12 +47,20 @@ def retry_on_network_error(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
-                except (requests.exceptions.Timeout, 
-                        requests.exceptions.ConnectionError,
-                        requests.exceptions.ProxyError) as e:
+                except (
+                    requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.ProxyError,
+                ) as e:
                     last_exception = e
                     if attempt < max_retries - 1:
-                        logger.warning("网络错误 (尝试 %d/%d): %s，%s秒后重试...", attempt + 1, max_retries, type(e).__name__, delay)
+                        logger.warning(
+                            "网络错误 (尝试 %d/%d): %s，%s秒后重试...",
+                            attempt + 1,
+                            max_retries,
+                            type(e).__name__,
+                            delay,
+                        )
                         time.sleep(delay)
                     else:
                         logger.error("重试%d次后仍失败", max_retries)
@@ -58,32 +68,34 @@ def retry_on_network_error(max_retries=MAX_RETRIES, delay=RETRY_DELAY):
                     # 非网络错误直接抛出
                     raise
             raise last_exception
+
         return wrapper
+
     return decorator
 
 
 class StandXAuth:
     """Handle StandX authentication flow for BSC"""
-    
+
     def __init__(self, private_key: str, ed25519_key: str = None, token: str = None):
         """
         Initialize with authentication parameters (two schemes supported).
-        
+
         Scheme 1 (Wallet-based): Only private_key is provided
             - private_key: Ethereum wallet private key with 0x prefix
             - ed25519_key: None or empty (will be auto-generated)
             - token: None or empty (will be obtained via wallet signature)
-        
+
         Scheme 2 (Token-based): private_key is None/empty, ed25519_key and token are provided
             - private_key: None or empty (wallet signing not used)
             - ed25519_key: Ed25519 private key from StandX (44-char base58 string)
             - token: Pre-obtained access token from StandX
-        
+
         Args:
             private_key: Ethereum wallet private key (scheme 1) or None (scheme 2)
             ed25519_key: Ed25519 private key (scheme 2) or None (scheme 1)
             token: Access token (scheme 2) or None (scheme 1)
-            
+
         Raises:
             ValueError: If parameters don't match either scheme
         """
@@ -91,7 +103,7 @@ class StandXAuth:
         private_key = private_key if private_key else None
         ed25519_key = ed25519_key if ed25519_key else None
         token = token if token else None
-        
+
         # Validate parameter combinations
         if private_key and ed25519_key and token:
             raise ValueError(
@@ -100,7 +112,7 @@ class StandXAuth:
                 "   方案1: 仅设置WALLET_PRIVATE_KEY（系统自动生成ED25519密钥）\n"
                 "   方案2: 仅设置ED25519_PRIVATE_KEY + ACCESS_TOKEN（WALLET_PRIVATE_KEY应为空）"
             )
-        
+
         # Scheme 1: Wallet-based authentication
         if private_key and not ed25519_key and not token:
             logger.info("方案1: 基于钱包签名的完整认证")
@@ -108,12 +120,12 @@ class StandXAuth:
             self.account = Account.from_key(private_key)
             self.wallet_address = self.account.address
             self.token = None
-            
+
             # Auto-generate Ed25519 keypair
             ed25519_key = self._generate_ed25519_keypair()
             logger.info("已自动生成ED25519密钥对")
             self._load_ed25519_key(ed25519_key)
-            
+
         # Scheme 2: Token-based authentication
         elif not private_key and ed25519_key and token:
             logger.info("方案2: 基于预配置令牌的快速认证")
@@ -121,10 +133,10 @@ class StandXAuth:
             self.account = None
             self.wallet_address = None
             self.token = token
-            
+
             # Load provided Ed25519 key
             self._load_ed25519_key(ed25519_key)
-            
+
         else:
             # Invalid combination
             raise ValueError(
@@ -135,12 +147,12 @@ class StandXAuth:
                 f"ED25519_PRIVATE_KEY={'✓' if ed25519_key else '✗'}, "
                 f"ACCESS_TOKEN={'✓' if token else '✗'}"
             )
-    
+
     @staticmethod
     def _generate_ed25519_keypair() -> str:
         """
         Generate a new Ed25519 keypair and return the private key.
-        
+
         Returns:
             Ed25519 private key as 44-character base58 encoded string
         """
@@ -149,191 +161,198 @@ class StandXAuth:
         # Encode as base58
         ed25519_key_b58 = b58encode(seed_bytes).decode()
         return ed25519_key_b58
-    
+
     def _load_ed25519_key(self, ed25519_key: str):
         """
         Load Ed25519 signing key from base58 string.
-        
+
         Args:
             ed25519_key: Ed25519 private key (44-char base58 string)
-            
+
         Raises:
             ValueError: If key format is invalid
         """
         try:
             seed_bytes = b58decode(ed25519_key)
             if len(seed_bytes) != 32:
-                raise ValueError(f"Ed25519 seed must be 32 bytes, got {len(seed_bytes)}")
+                raise ValueError(
+                    f"Ed25519 seed must be 32 bytes, got {len(seed_bytes)}"
+                )
             self.ed25519_signing_key = SigningKey(seed_bytes)
         except Exception as e:
-            raise ValueError(f"ED25519_PRIVATE_KEY 格式错误，必须是 44 字符的 base58 编码字符串: {e}")
-        
-        self.request_id = b58encode(self.ed25519_signing_key.verify_key.encode()).decode()
-        
+            raise ValueError(
+                f"ED25519_PRIVATE_KEY 格式错误，必须是 44 字符的 base58 编码字符串: {e}"
+            )
+
+        self.request_id = b58encode(
+            self.ed25519_signing_key.verify_key.encode()
+        ).decode()
+
     @retry_on_network_error()
     def _get_prepare_signin_data(self) -> dict:
         """
         Step 1: Call prepare-signin to get signature data (signedData JWT)
-        
+
         Returns:
             Dictionary with signedData JWT
-            
+
         Raises:
             Exception: If API call fails
         """
         logger.info("Calling prepare-signin endpoint... [1/4]")
-        
+
         params = {"chain": CHAIN}
-        payload = {
-            "address": self.wallet_address,
-            "requestId": self.request_id
-        }
+        payload = {"address": self.wallet_address, "requestId": self.request_id}
         headers = {"Content-Type": "application/json"}
-        
+
         try:
             response = requests.post(
                 PREPARE_SIGNIN_URL,
                 params=params,
                 json=payload,
                 headers=headers,
-                timeout=DEFAULT_TIMEOUT
+                timeout=DEFAULT_TIMEOUT,
             )
             response.raise_for_status()
-            
+
             data = response.json()
-            
+
             if not data.get("success"):
                 raise Exception(f"prepare-signin failed: {data}")
-            
+
             signed_data = data.get("signedData")
             if not signed_data:
                 raise Exception("No signedData in response")
-            
+
             logger.info("Received signedData JWT")
             return {"signedData": signed_data}
-            
+
         except requests.exceptions.RequestException as e:
             detail = ""
             if hasattr(e, "response") and e.response is not None:
                 detail = f" status={e.response.status_code}"
             logger.exception("HTTP error in prepare-signin: %s %s", str(e), detail)
             raise Exception(f"HTTP error in prepare-signin: {str(e)}{detail}")
-    
+
     def _extract_message_from_jwt(self, signed_data: str) -> str:
         """
         Step 2: Extract message from JWT without verification (for demonstration)
-        
+
         Note: In production, you should verify the JWT signature using StandX's public key
-        
+
         Args:
             signed_data: JWT token from prepare-signin
-            
+
         Returns:
             Message string to be signed
         """
         logger.info("Extracting message from JWT... [2/4]")
-        
+
         try:
             # Decode without verification (as we don't have StandX's public key here)
             # In production, verify with: jwt.decode(signed_data, public_key, algorithms=["ES256"])
             decoded = jwt.decode(signed_data, options={"verify_signature": False})
-            
+
             message = decoded.get("message")
             if not message:
                 raise Exception("No message field in JWT payload")
-            
+
             logger.debug("Extracted message (truncated): %s...", message[:50])
             return message
-            
+
         except jwt.DecodeError as e:
             logger.exception("JWT decode error: %s", str(e))
             raise Exception(f"JWT decode error: {str(e)}")
-    
+
     def _sign_message(self, message: str) -> str:
         """
         Step 3: Sign the message with wallet private key using Ethereum signing
-        
+
         Args:
             message: Message to sign
-            
+
         Returns:
             Signature hex string
         """
         logger.info("Signing message with wallet... [3/4]")
-        
+
         try:
             # Create message hash using Ethereum standard (EIP-191)
             message_hash = encode_defunct(text=message)
-            
+
             # Sign with account
             signed_message = self.account.sign_message(message_hash)
-            
+
             signature = signed_message.signature.hex()
             logger.debug("Generated signature (masked)")
-            
+
             return signature
-            
+
         except Exception as e:
             logger.exception("Signing error: %s", str(e))
             raise Exception(f"Signing error: {str(e)}")
-    
+
     @retry_on_network_error()
     def _get_access_token(self, signature: str, signed_data: str) -> dict:
         """
         Step 4: Call login endpoint with signature to get access token
-        
+
         Args:
             signature: Signed message hex string
             signed_data: JWT from prepare-signin
-            
+
         Returns:
             Dictionary with access token and user info
-            
+
         Raises:
             Exception: If login fails
         """
         logger.info("Calling login endpoint... [4/4]")
-        
+
         payload = {
             "signature": signature,
             "signedData": signed_data,
-            "expiresSeconds": 604800  # 7 days
+            "expiresSeconds": 604800,  # 7 days
         }
-        
-        headers = {
-            "Content-Type": "application/json"
-        }
-        
+
+        headers = {"Content-Type": "application/json"}
+
         try:
             response = requests.post(
                 LOGIN_URL,
                 params={"chain": CHAIN},
                 json=payload,
                 headers=headers,
-                timeout=DEFAULT_TIMEOUT
+                timeout=DEFAULT_TIMEOUT,
             )
             response.raise_for_status()
-            
+
             data = response.json()
-            
+
             if "token" not in data:
                 raise Exception(f"Login failed: {data}")
 
             self.token = data.get("token")
             logger.info("Access token received (redacted)")
             logger.info("Successfully authenticated")
-            logger.debug("Auth response meta: address=%s alias=%s chain=%s perpsAlpha=%s", data.get('address'), data.get('alias', 'N/A'), data.get('chain'), data.get('perpsAlpha'))
+            logger.debug(
+                "Auth response meta: address=%s alias=%s chain=%s perpsAlpha=%s",
+                data.get("address"),
+                data.get("alias", "N/A"),
+                data.get("chain"),
+                data.get("perpsAlpha"),
+            )
 
             return data
-            
+
         except requests.exceptions.RequestException as e:
             logger.exception("HTTP error in login: %s", str(e))
             raise Exception(f"HTTP error in login: {str(e)}")
-    
+
     def authenticate(self) -> dict:
         """
         Execute full authentication flow or use pre-provided token
-        
+
         Returns:
             Dictionary with authentication response including access token
         """
@@ -342,47 +361,55 @@ class StandXAuth:
             logger.info("StandX Authentication (BSC) using provided token")
             logger.debug("Wallet: %s", self.wallet_address)
             return {"token": self.token}
-        
+
         logger.info("StandX Authentication Flow (BSC)")
         logger.debug("Wallet: %s", self.wallet_address)
         logger.debug("requestId (ed25519 pubkey): %s", self.request_id)
-        
+
         try:
             # Step 1: Get signature data
             prepare_data = self._get_prepare_signin_data()
             signed_data = prepare_data["signedData"]
-            
+
             # Step 2: Extract message from JWT
             message = self._extract_message_from_jwt(signed_data)
-            
+
             # Step 3: Sign the message
             signature = self._sign_message(message)
-            
+
             # Step 4: Get access token
             auth_response = self._get_access_token(signature, signed_data)
-            
+
             logger.info("Authentication successful (access token redacted)")
-            
+
             return auth_response
-            
+
         except Exception as e:
             logger.exception("Authentication failed: %s", str(e))
             raise
-    
+
     def get_token(self) -> str:
         """Get current access token for API calls"""
         return self.token
-    
+
     @retry_on_network_error()
-    def make_api_call(self, endpoint: str, method: str = "GET", data: dict = None, params: dict = None, headers_extra: dict = None, raw_body: str = None) -> dict:
+    def make_api_call(
+        self,
+        endpoint: str,
+        method: str = "GET",
+        data: dict = None,
+        params: dict = None,
+        headers_extra: dict = None,
+        raw_body: str = None,
+    ) -> dict:
         """
         Make authenticated API call to StandX
-        
+
         Args:
             endpoint: API endpoint path (e.g., "/v1/user/profile")
             method: HTTP method (GET, POST, etc.)
             data: Request body for POST/PUT requests
-            
+
         Returns:
             Response JSON
         """
@@ -394,43 +421,67 @@ class StandXAuth:
         url = f"{PERPS_BASE_URL}{normalized_endpoint}"
         headers = {
             "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
         if headers_extra:
             headers.update(headers_extra)
-        
+
         try:
             method_up = method.upper()
             if method_up == "GET":
-                response = requests.get(url, headers=headers, params=params, timeout=DEFAULT_TIMEOUT)
+                response = requests.get(
+                    url, headers=headers, params=params, timeout=DEFAULT_TIMEOUT
+                )
             elif method_up == "POST":
                 if raw_body is not None:
                     response = requests.post(
-                        url, data=raw_body, headers=headers, params=params, timeout=DEFAULT_TIMEOUT
+                        url,
+                        data=raw_body,
+                        headers=headers,
+                        params=params,
+                        timeout=DEFAULT_TIMEOUT,
                     )
                 else:
                     response = requests.post(
-                        url, json=data, headers=headers, params=params, timeout=DEFAULT_TIMEOUT
+                        url,
+                        json=data,
+                        headers=headers,
+                        params=params,
+                        timeout=DEFAULT_TIMEOUT,
                     )
             else:
                 raise ValueError(f"Unsupported method: {method}")
-            
+
             response.raise_for_status()
             return response.json()
-            
+
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response is not None else None
             body = e.response.text if e.response is not None else None
             # 特殊处理403签名过期错误
             if status == 403 and body and "signature has expired" in body:
-                raise Exception(f"Body signature expired (403): {body} - 请检查系统时间是否同步")
-            detail = f" status={status} url={url} body={body}" if status else f" url={url}"
+                raise Exception(
+                    f"Body signature expired (403): {body} - 请检查系统时间是否同步"
+                )
+            detail = (
+                f" status={status} url={url} body={body}" if status else f" url={url}"
+            )
             logger.exception("API call HTTPError: %s %s", str(e), detail)
             raise Exception(f"API call failed: {str(e)}{detail}")
         except requests.exceptions.RequestException as e:
-            status = getattr(e.response, "status_code", None) if hasattr(e, "response") else None
-            body = getattr(e.response, "text", None) if hasattr(e, "response") and e.response is not None else None
-            detail = f" status={status} url={url} body={body}" if status else f" url={url}"
+            status = (
+                getattr(e.response, "status_code", None)
+                if hasattr(e, "response")
+                else None
+            )
+            body = (
+                getattr(e.response, "text", None)
+                if hasattr(e, "response") and e.response is not None
+                else None
+            )
+            detail = (
+                f" status={status} url={url} body={body}" if status else f" url={url}"
+            )
             logger.exception("API call RequestException: %s %s", str(e), detail)
             raise Exception(f"API call failed: {str(e)}{detail}")
 
@@ -439,7 +490,9 @@ class StandXAuth:
         x_request_id = str(uuid.uuid4())
         x_request_timestamp = str(int(time.time() * 1000))  # milliseconds
         message = f"v1,{x_request_id},{x_request_timestamp},{payload_str}"
-        signature_bytes = self.ed25519_signing_key.sign(message.encode("utf-8")).signature
+        signature_bytes = self.ed25519_signing_key.sign(
+            message.encode("utf-8")
+        ).signature
         signature_b64 = base64.b64encode(signature_bytes).decode()
         return {
             "x-request-sign-version": "v1",
@@ -448,10 +501,39 @@ class StandXAuth:
             "x-request-signature": signature_b64,
         }
 
+    def sign_request(
+        self, payload: str, request_id: str, timestamp: int
+    ) -> Dict[str, str]:
+        """
+        Sign a request with ed25519 private key.
+
+        Args:
+            payload: Request payload as JSON string
+            request_id: Request ID
+            timestamp: Timestamp in seconds
+
+        Returns:
+            Dictionary with signature headers
+        """
+        version = "v1"
+        message = f"{version},{request_id},{timestamp},{payload}"
+        logger.info("Signing request message with Ed25519 key")
+        logger.info(f"message: {message}")
+        message_bytes = message.encode("utf-8")
+
+        signature = self.ed25519_signing_key.sign(message_bytes)
+        signature_b64 = base64.b64encode(signature).decode("utf-8")
+
+        return {
+            "x-request-sign-version": version,
+            "x-request-id": request_id,
+            "x-request-timestamp": str(timestamp),
+            "x-request-signature": signature_b64,
+        }
 
 def main():
     """Example usage of StandX authentication"""
-    
+
     # Get private key from environment
     private_key = os.getenv("WALLET_PRIVATE_KEY")
     ed25519_key = os.getenv("ED25519_PRIVATE_KEY")
@@ -462,22 +544,24 @@ def main():
             "WALLET_PRIVATE_KEY not found in .env file. "
             "Please set your wallet private key."
         )
-    
+
     if not ed25519_key:
         raise ValueError(
             "ED25519_PRIVATE_KEY not found in .env file. "
             "Please set your Ed25519 private key from StandX platform."
         )
-    
+
     # Initialize authentication
     auth = StandXAuth(private_key, ed25519_key, token=token)
-    
+
     # Authenticate and get token
     auth_response = auth.authenticate()
     logger.debug("Authentication response: %s", auth_response)
-    
+
     # Debug: auth response and public price (redacted in logs)
-    logger.debug("Full Authentication Response: %s", json.dumps(auth_response, indent=2))
+    logger.debug(
+        "Full Authentication Response: %s", json.dumps(auth_response, indent=2)
+    )
 
     # Public sanity check: query symbol price
     symbol = os.getenv("LIMIT_ORDER_SYMBOL", "BTC-USD")
@@ -542,14 +626,16 @@ def main():
             leverage=current_leverage,
         )
         order_request_id = order_resp.get("request_id")
-        logger.info("Placed %s limit order @ %s (%s bps adj)", side, limit_price_str, bps)
+        logger.info(
+            "Placed %s limit order @ %s (%s bps adj)", side, limit_price_str, bps
+        )
         logger.debug("Order response: %s", json.dumps(order_resp, indent=2))
     except Exception as e:
         logger.exception("下单失败: %s", e)
         order_request_id = None
 
     # Query order status using client order ID (request_id)
-    if 'order_request_id' in locals() and order_request_id:
+    if "order_request_id" in locals() and order_request_id:
         logger.info("Waiting 5s for order to be recorded in backend...")
         time.sleep(5)
 
@@ -560,12 +646,19 @@ def main():
             logger.info("Open Orders (%s):", symbol)
             if open_orders.get("result"):
                 for ord in open_orders["result"]:
-                    logger.info("%s: %s @ %s qty=%s side=%s", ord['cl_ord_id'], ord['status'], ord['price'], ord['qty'], ord['side'])
+                    logger.info(
+                        "%s: %s @ %s qty=%s side=%s",
+                        ord["cl_ord_id"],
+                        ord["status"],
+                        ord["price"],
+                        ord["qty"],
+                        ord["side"],
+                    )
             else:
-                logger.info("(empty, page_size=%s)", open_orders.get('page_size'))
+                logger.info("(empty, page_size=%s)", open_orders.get("page_size"))
         except Exception as e:
             logger.warning("Query open orders error: %s", e)
-        
+
         # Try query_orders with symbol filter
         logger.info("Querying all orders with symbol=%s...", symbol)
         try:
@@ -573,9 +666,16 @@ def main():
             logger.info("Orders (%s, recent 50):", symbol)
             if all_orders.get("result"):
                 for ord in all_orders["result"][:10]:  # Show first 10
-                    logger.info("- %s: %s @ %s qty=%s side=%s", ord['cl_ord_id'], ord['status'], ord['price'], ord['qty'], ord['side'])
+                    logger.info(
+                        "- %s: %s @ %s qty=%s side=%s",
+                        ord["cl_ord_id"],
+                        ord["status"],
+                        ord["price"],
+                        ord["qty"],
+                        ord["side"],
+                    )
             else:
-                logger.info("(empty, page_size=%s)", all_orders.get('page_size'))
+                logger.info("(empty, page_size=%s)", all_orders.get("page_size"))
         except Exception as e:
             logger.warning("Query orders error: %s", e)
 

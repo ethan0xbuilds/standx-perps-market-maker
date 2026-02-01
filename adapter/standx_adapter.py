@@ -1,9 +1,12 @@
 import asyncio
+import json
 import os
 import time
 from typing import Optional
-from api.ws_client import StandXMarketStream
+from api.ws_client import StandXMarketStream, StandXOrderStream
 from logger import get_logger
+from standx_api import query_positions
+from standx_auth import StandXAuth
 
 logger = get_logger(__name__)
 
@@ -13,13 +16,16 @@ class StandXAdapter:
     StandXAdapter 用于对接 StandX 市场 WebSocket，处理市场深度、订单、持仓等推送数据，
     并提供本地缓存和查询接口。支持异步订阅和事件处理。
     """
+
     def __init__(self):
-        self.market_stream: Optional[StandXMarketStream] = None
+        self._market_stream: Optional[StandXMarketStream] = None
+        self._order_stream: Optional[StandXOrderStream] = None
         self._depth_mid_price: Optional[float] = None
         self._last_price_update_time: Optional[float] = None
         self._price_updated_and_processed: bool = True
         self._orders: list = []
         self._position: Optional[dict] = None
+        self._positions: Optional[list] = None
 
     async def connect_market_stream(self) -> StandXMarketStream:
         """
@@ -27,10 +33,10 @@ class StandXAdapter:
         Returns:
             StandXMarketStream: 已连接的市场数据流对象
         """
-        if not self.market_stream:
-            self.market_stream = StandXMarketStream()
-        if not self.market_stream.connected:
-            await self.market_stream.connect()
+        if not self._market_stream:
+            self._market_stream = StandXMarketStream()
+        if not self._market_stream.connected:
+            await self._market_stream.connect()
 
     async def subscribe_market(self, channel: str, symbol: str, callback=None):
         """
@@ -41,7 +47,7 @@ class StandXAdapter:
             callback (callable, optional): 回调函数
         """
         await self.connect_market_stream()
-        await self.market_stream.subscribe(channel, symbol, callback=callback)
+        await self._market_stream.subscribe(channel, symbol, callback=callback)
 
     async def on_depth_book(self, data):
         try:
@@ -100,6 +106,13 @@ class StandXAdapter:
         Args:
             symbol (str): 交易对，默认 BTC-USD
         """
+        if not self._market_stream:
+            self._market_stream = StandXMarketStream()
+        if not self._market_stream.connected:
+            await self._market_stream.connect()
+        if not self._market_stream.authenticated:
+            await self._authenticate()
+
         await self.subscribe_market(
             channel="depth_book", symbol=symbol, callback=self.on_depth_book
         )
@@ -135,7 +148,10 @@ class StandXAdapter:
                 )
                 # 订单取消时移除订单，否则新增订单
                 for idx, order in enumerate(self._orders):
-                    if order["id"] == order_data.get("id") and order_data.get("status") == "canceled":
+                    if (
+                        order["id"] == order_data.get("id")
+                        and order_data.get("status") == "canceled"
+                    ):
                         self._orders.pop(idx)
                         logger.info("订单已取消，移除订单 id=%s", order_data.get("id"))
                         logger.info("当前订单总数: %d", len(self._orders))
@@ -173,8 +189,8 @@ class StandXAdapter:
                 logger.debug("当前持仓详情: %s", self._position)
         except Exception as e:
             logger.exception("处理 position 数据失败: %s", e)
-            
-    async def authenticate_and_subscribe_orders(self):
+
+    async def _authenticate(self):
         """
         认证并订阅订单和持仓频道
         Raises:
@@ -184,9 +200,11 @@ class StandXAdapter:
             raise ValueError("环境变量 ACCESS_TOKEN 未设置")
 
         await self.connect_market_stream()
-        await self.market_stream.authenticate(os.getenv("ACCESS_TOKEN"), [{"channel": "order"}, {"channel": "position"}])
-        await self.market_stream.subscribe("order", callback=self.on_order)
-        await self.market_stream.subscribe("position", callback=self.on_position)
+        await self._market_stream.authenticate(
+            os.getenv("ACCESS_TOKEN"), [{"channel": "order"}, {"channel": "position"}]
+        )
+        await self._market_stream.subscribe("order", callback=self.on_order)
+        await self._market_stream.subscribe("position", callback=self.on_position)
 
     def get_buy_order_count(self) -> int:
         """
@@ -197,7 +215,7 @@ class StandXAdapter:
         if self._orders:
             return sum(1 for order in self._orders if order["side"] == "buy")
         return 0
-    
+
     def get_sell_order_count(self) -> int:
         """
         获取卖单数量
@@ -207,7 +225,7 @@ class StandXAdapter:
         if self._orders:
             return sum(1 for order in self._orders if order["side"] == "sell")
         return 0
-    
+
     def get_buy_orders(self) -> list:
         """
         获取所有买单列表
@@ -217,7 +235,7 @@ class StandXAdapter:
         if self._orders:
             return [order for order in self._orders if order["side"] == "buy"]
         return []
-    
+
     def get_sell_orders(self) -> list:
         """
         获取所有卖单列表
@@ -227,15 +245,15 @@ class StandXAdapter:
         if self._orders:
             return [order for order in self._orders if order["side"] == "sell"]
         return []
-    
-    def get_position(self) -> Optional[dict]:
+
+    async def get_positions(self) -> Optional[dict]:
         """
-        获取当前持仓信息
+        获取当前持仓信息（别名）
         Returns:
             Optional[dict]: 当前持仓数据，若无则为 None
         """
-        return self._position
-    
+        self._positions = await self.get_positions()
+
     def is_price_updated_and_processed(self) -> bool:
         """
         判断中间价是否已处理
@@ -243,9 +261,117 @@ class StandXAdapter:
             bool: 是否已处理
         """
         return self._price_updated_and_processed
-    
+
     def mark_price_processed(self):
         """
         标记中间价已处理
         """
         self._price_updated_and_processed = True
+
+    def on_login(self, data):
+        """
+        处理登录成功回调
+        Args:
+            data (dict): 登录成功数据
+        """
+        logger.info("WebSocket 登录成功: %s", data)
+
+    def on_new_order(self, data):
+        """
+        处理新订单回调
+        Args:
+            data (dict): 新订单数据
+        """
+        logger.info("通过订单流下单成功: %s", data)
+
+    async def connect_order_stream(self, auth):
+        """
+        连接订单和持仓 WebSocket（需要认证）
+        Returns:
+            StandXOrderStream: 已连接的订单数据流对象
+        """
+        if not self._order_stream:
+            self._order_stream = StandXOrderStream()
+        if not self._order_stream.connected:
+            await self._order_stream.connect()
+        if not self._order_stream.auth:
+            self._order_stream.auth = auth
+        if not os.getenv("ACCESS_TOKEN"):
+            raise ValueError("环境变量 ACCESS_TOKEN 未设置")
+
+        await self._order_stream.login(
+            token=os.getenv("ACCESS_TOKEN"), callback=self.on_login
+        )
+
+    async def new_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        qty: str,
+        price: Optional[str] = None,
+        time_in_force: str = "gtc",
+        reduce_only: bool = False,
+        margin_mode: Optional[str] = None,
+        leverage: Optional[int] = None,
+    ) -> dict:
+        """
+        通过订单流下单
+        Args:
+            symbol (str): 交易对
+            side (str): 买卖方向 "buy" 或 "sell"
+            order_type (str): 订单类型 "limit" 或 "market"
+            qty (str): 订单数量
+            price (Optional[str]): 订单价格（限价单必填）
+            time_in_force (str): 有效方式，默认 "gtc"
+            reduce_only (bool): 是否仅减仓，默认 False
+            margin_mode (Optional[str]): 保证金模式
+            leverage (Optional[int]): 杠杆倍数
+        Returns:
+            dict: 下单结果
+        """
+        if not self._order_stream or not self._order_stream.connected:
+            raise RuntimeError("订单流未连接，请先调用 connect_order_stream()")
+
+        await self._order_stream.new_order(
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            qty=qty,
+            time_in_force=time_in_force,
+            reduce_only=reduce_only,
+            price=price,
+            cl_ord_id=None,
+            callback=self.on_new_order,
+        )
+
+    # 新增一个方法，通过市价订单将持仓平掉
+    async def close_position(self, symbol: str):
+        """
+        通过市价订单平掉当前持仓
+        Args:
+            symbol (str): 交易对
+        """
+        positions = self.get_positions()
+        for position in positions:
+            if not position or float(position.get("qty", 0)) == 0:
+                logger.info("当前无持仓，无需平仓")
+                return
+
+        side = "sell" if float(position["qty"]) > 0 else "buy"
+        qty = str(abs(float(position["qty"])))
+
+        logger.info(
+            "准备通过市价单平仓: symbol=%s, side=%s, qty=%s",
+            symbol,
+            side,
+            qty,
+        )
+
+        await self.new_order(
+            symbol=symbol,
+            side=side,
+            order_type="market",
+            qty=qty,
+            reduce_only=True,
+        )

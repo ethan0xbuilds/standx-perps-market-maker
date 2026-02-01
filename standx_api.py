@@ -60,7 +60,7 @@ async def new_limit_order(
     leverage: int = None,
 ) -> dict:
     """Place a signed limit order (requires body signature).
-    
+
     Args:
         auth: StandXAuth instance
         symbol: Trading pair (e.g., "BTC-USD")
@@ -107,7 +107,7 @@ async def new_market_order(
     time_in_force: str = "ioc",
 ) -> dict:
     """Place a signed market order (requires body signature).
-    
+
     Args:
         auth: StandXAuth instance
         symbol: Trading pair (e.g., "BTC-USD")
@@ -141,27 +141,29 @@ async def new_market_order(
     )
 
 
-async def cancel_order(auth: StandXAuth, order_id: int = None, cl_ord_id: str = None) -> dict:
+async def cancel_order(
+    auth: StandXAuth, order_id: int = None, cl_ord_id: str = None
+) -> dict:
     """
     Cancel an existing order (requires body signature).
-    
+
     Args:
         auth: StandXAuth instance
         order_id: Order ID to cancel (at least one of order_id or cl_ord_id required)
         cl_ord_id: Client order ID to cancel
-        
+
     Returns:
         Response with code, message, and request_id
     """
     if order_id is None and cl_ord_id is None:
         raise ValueError("At least one of order_id or cl_ord_id is required")
-    
+
     payload = {}
     if order_id is not None:
         payload["order_id"] = order_id
     if cl_ord_id is not None:
         payload["cl_ord_id"] = cl_ord_id
-    
+
     payload_str = json.dumps(payload, separators=(",", ":"))
     headers_extra = auth._body_signature_headers(payload_str)
     return auth.make_api_call(
@@ -185,7 +187,9 @@ def query_order(auth: StandXAuth, order_id: int = None, cl_ord_id: str = None) -
     return auth.make_api_call("/api/query_order", params=params)
 
 
-async def query_open_orders(auth: StandXAuth, symbol: str = None, limit: int = None) -> dict:
+async def query_open_orders(
+    auth: StandXAuth, symbol: str = None, limit: int = None
+) -> dict:
     """Query all open orders, optionally filtered by symbol."""
     params = {}
     if symbol is not None:
@@ -195,7 +199,9 @@ async def query_open_orders(auth: StandXAuth, symbol: str = None, limit: int = N
     return auth.make_api_call("/api/query_open_orders", params=params)
 
 
-def query_orders(auth: StandXAuth, symbol: str = None, status: str = None, limit: int = None) -> dict:
+def query_orders(
+    auth: StandXAuth, symbol: str = None, status: str = None, limit: int = None
+) -> dict:
     """Query all orders (open/closed), optionally filtered by symbol/status."""
     params = {}
     if symbol is not None:
