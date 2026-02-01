@@ -265,8 +265,8 @@ class StandXOrderStream:
 
     async def cancel_order(
         self,
-        order_id_list: Optional[List[int]] = None,
-        cl_ord_id_list: Optional[List[str]] = None,
+        order_id: Optional[int] = None,
+        cl_ord_id: Optional[str] = None,
         callback: Optional[Callable] = None,
     ):
         """取消订单"""
@@ -276,21 +276,21 @@ class StandXOrderStream:
         if not self.auth:
             raise Exception("需要 StandXAuth 实例进行请求签名")
 
-        if not order_id_list and not cl_ord_id_list:
-            raise ValueError("必须提供 order_id_list 或 cl_ord_id_list")
+        if not order_id and not cl_ord_id:
+            raise ValueError("必须提供 order_id 或 cl_ord_id 之一")
 
         params = {}
-        if order_id_list:
-            params["order_id_list"] = order_id_list
-        if cl_ord_id_list:
-            params["cl_ord_id_list"] = cl_ord_id_list
+        if order_id:
+            params["order_id"] = order_id
+        if cl_ord_id:
+            params["cl_ord_id"] = cl_ord_id
 
         params_str = json.dumps(params)
         request_id = str(uuid.uuid4())
         timestamp = int(time.time())
 
         # 生成签名头
-        sign_headers = self.auth.sign_request(params_str, request_id, timestamp)
+        sign_headers = self.auth._body_signature_headers(params_str)
 
         message = {
             "session_id": self.session_id,

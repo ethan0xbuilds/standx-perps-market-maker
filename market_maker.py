@@ -289,7 +289,7 @@ class MarketMaker:
                     logger.info("订单需重挂，原因: %s", reason)
 
                     # 取消所有订单并等待确认
-                    await self.cancel_all_orders()
+                    await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
                     cancel_success = await self.exchange_adapter.wait_for_order_count(
                         0, 0, timeout=3.0
                     )
@@ -333,7 +333,6 @@ class MarketMaker:
         # 清理：取消所有订单
         logger.info("清理所有订单...")
         await self.cleanup()
-
         logger.info("策略已停止")
 
         # 停止通知
@@ -343,14 +342,8 @@ class MarketMaker:
 
     async def cleanup(self):
         """清理所有订单和资源"""
-        orders_to_cancel = self.exchange_adapter._orders
-
-        for order in orders_to_cancel:
-            try:
-                cancel_resp = await api.cancel_order(self.auth, order_id=order["id"])
-                logger.info("取消 %s 订单: %s", order["side"], order["cl_ord_id"])
-            except Exception as e:
-                logger.exception("取消失败: %s", e)
+        await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
+        await self.exchange_adapter.cleanup()
 
 
 async def main():

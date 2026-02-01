@@ -283,7 +283,7 @@ class StandXAdapter:
         """
         initial_count = self._order_confirmed_count
         target_count = initial_count + count
-        
+
         start_time = time.time()
         while time.time() - start_time < timeout:
             if self._order_confirmed_count >= target_count:
@@ -294,7 +294,7 @@ class StandXAdapter:
                 )
                 return True
             await asyncio.sleep(0.05)  # 50ms检查一次
-        
+
         logger.warning(
             "订单确认超时: 期望 %d 个，实际收到 %d 个，耗时 %.2f 秒",
             count,
@@ -303,7 +303,9 @@ class StandXAdapter:
         )
         return False
 
-    async def wait_for_order_count(self, target_buy: int, target_sell: int, timeout: float = 5.0) -> bool:
+    async def wait_for_order_count(
+        self, target_buy: int, target_sell: int, timeout: float = 5.0
+    ) -> bool:
         """
         等待订单数量达到目标值（用于等待订单取消）
         Args:
@@ -327,7 +329,7 @@ class StandXAdapter:
                 )
                 return True
             await asyncio.sleep(0.05)  # 50ms检查一次
-        
+
         logger.warning(
             "等待订单数量超时: 目标(买%d/卖%d), 实际(买%d/卖%d), 耗时 %.2f 秒",
             target_buy,
@@ -353,6 +355,14 @@ class StandXAdapter:
             data (dict): 新订单数据
         """
         logger.info("通过订单流下单成功: %s", data)
+
+    def on_cancel_order(self, data):
+        """
+        处理取消订单回调
+        Args:
+            data (dict): 取消订单数据
+        """
+        logger.info("通过订单流取消订单成功: %s", data)
 
     async def connect_order_stream(self, auth):
         """
@@ -426,11 +436,11 @@ class StandXAdapter:
 
         if not position:
             return
-        
+
         qty_value = float(position.get("qty", 0))
         if qty_value == 0:
             return
-        
+
         side = "sell" if qty_value > 0 else "buy"
         qty = str(abs(qty_value))
 
@@ -448,3 +458,36 @@ class StandXAdapter:
             qty=qty,
             reduce_only=True,
         )
+
+    async def cancel_all_orders(self, symbol: Optional[str] = None):
+        """
+        取消所有未完成订单
+        Args:
+            symbol (Optional[str]): 交易对，若提供则只取消该交易对的订单
+        """
+        if not self._order_stream or not self._order_stream.connected:
+            raise RuntimeError("订单流未连接，请先调用 connect_order_stream()")
+
+        orders_to_cancel = (
+            [order for order in self._orders if order["symbol"] == symbol]
+            if symbol
+            else self._orders.copy()
+        )
+
+        for order in orders_to_cancel:
+            try:
+                await self._order_stream.cancel_order(
+                    order_id=order["id"],
+                    cl_ord_id=order["cl_ord_id"],
+                    callback=self.on_cancel_order,
+                )
+                logger.info("取消 %s 订单: %s", order["side"], order["cl_ord_id"])
+            except Exception as e:
+                logger.exception("取消失败: %s", e)
+
+    async def cleanup(self):
+        """清理资源，关闭 WebSocket 连接"""
+        if self._market_stream and self._market_stream.connected:
+            await self._market_stream.disconnect()
+        if self._order_stream and self._order_stream.connected:
+            await self._order_stream.disconnect()
