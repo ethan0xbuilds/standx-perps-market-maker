@@ -114,7 +114,7 @@ class StandXMarketStream:
         if self.ws:
             await self.ws.send(json.dumps(message))
 
-    async def close(self):
+    async def disconnect(self):
         """关闭连接"""
         if self.ws:
             await self.ws.close()
@@ -309,7 +309,7 @@ class StandXOrderStream:
 
         await self.ws.send(json.dumps(message))
 
-    async def close(self):
+    async def disconnect(self):
         """关闭连接"""
         if self.ws:
             await self.ws.close()

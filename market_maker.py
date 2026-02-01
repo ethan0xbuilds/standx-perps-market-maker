@@ -434,18 +434,20 @@ async def main():
         notifier=notifier,
         exchange_adapter=standx_adapter,
     )
-    # 启动做市和 WebSocket 监听为并发任务
-    maker_task = asyncio.create_task(market_maker.run(check_interval=check_interval))
-    # 其他需要常驻的异步任务也用 create_task
-    await maker_task
-
-    logger.info(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    await asyncio.sleep(5)  # 等待初始数据
-    logger.info(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-
-    await standx_adapter._market_stream.close()
+    
+    try:
+        # 启动做市和 WebSocket 监听为并发任务
+        maker_task = asyncio.create_task(market_maker.run(check_interval=check_interval))
+        # 其他需要常驻的异步任务也用 create_task
+        await maker_task
+    finally:
+        # 确保清理资源，即使被Ctrl+C中断也会执行
+        logger.info("执行清理操作...")
+        await market_maker.cleanup()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass  # 优雅退出，不显示traceback
