@@ -246,13 +246,28 @@ class StandXAdapter:
             return [order for order in self._orders if order["side"] == "sell"]
         return []
 
-    async def get_positions(self) -> Optional[dict]:
+    async def get_positions(self, symbol: Optional[str] = None) -> list:
         """
-        获取当前持仓信息（别名）
+        获取当前持仓信息
+        Args:
+            symbol (Optional[str]): 交易对，若提供则过滤
         Returns:
-            Optional[dict]: 当前持仓数据，若无则为 None
+            list: 当前持仓列表，若无则为 []
         """
-        self._positions = await self.get_positions()
+        positions: list = []
+
+        if self._positions:
+            positions = list(self._positions)
+        elif self._position:
+            positions = [self._position]
+        elif self._order_stream and self._order_stream.auth:
+            positions = await query_positions(self._order_stream.auth, symbol=symbol)
+
+        if symbol:
+            positions = [pos for pos in positions if pos.get("symbol") == symbol]
+
+        self._positions = positions
+        return positions
 
     def is_price_updated_and_processed(self) -> bool:
         """
@@ -352,26 +367,34 @@ class StandXAdapter:
         Args:
             symbol (str): 交易对
         """
-        positions = self.get_positions()
+        positions = await self.get_positions(symbol=symbol)
+        has_position = False
+
         for position in positions:
-            if not position or float(position.get("qty", 0)) == 0:
-                logger.info("当前无持仓，无需平仓")
-                return
+            if not position:
+                continue
+            qty_value = float(position.get("qty", 0))
+            if qty_value == 0:
+                continue
 
-        side = "sell" if float(position["qty"]) > 0 else "buy"
-        qty = str(abs(float(position["qty"])))
+            has_position = True
+            side = "sell" if qty_value > 0 else "buy"
+            qty = str(abs(qty_value))
 
-        logger.info(
-            "准备通过市价单平仓: symbol=%s, side=%s, qty=%s",
-            symbol,
-            side,
-            qty,
-        )
+            logger.info(
+                "准备通过市价单平仓: symbol=%s, side=%s, qty=%s",
+                symbol,
+                side,
+                qty,
+            )
 
-        await self.new_order(
-            symbol=symbol,
-            side=side,
-            order_type="market",
-            qty=qty,
-            reduce_only=True,
-        )
+            await self.new_order(
+                symbol=symbol,
+                side=side,
+                order_type="market",
+                qty=qty,
+                reduce_only=True,
+            )
+
+        if not has_position:
+            logger.info("当前无持仓，无需平仓")
