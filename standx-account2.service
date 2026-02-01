@@ -7,7 +7,11 @@ Type=simple
 User=root
 WorkingDirectory=/root/standx
 ExecStart=/root/standx/.venv/bin/python -u /root/standx/market_maker.py --config /root/standx/.env.account2 --log-prefix account2
-ExecStop=/bin/bash -c 'kill -TERM $(pgrep -f "market_maker.py --config.*account2")'
+
+# 优雅关闭配置
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
 
 Restart=on-failure
 RestartSec=10
