@@ -5,23 +5,23 @@
 - 订单偏离超过阈值时取消并重新挂单
 """
 
-# 首先加载环境变量，必须在其他模块导入之前
-from dotenv import load_dotenv
-load_dotenv()
-
 # 标准库导入
+import argparse
 import asyncio
 import os
 import signal
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+# 首先加载环境变量，必须在其他模块导入之前
+from dotenv import load_dotenv
+
 # 本地模块导入
 from adapter.standx_adapter import StandXAdapter
 from standx_auth import StandXAuth
 import standx_api as api
 from notifier import Notifier
-from logger import get_logger
+from logger import get_logger, configure_logging
 
 logger = get_logger(__name__)
 
@@ -348,6 +348,22 @@ class MarketMaker:
 
 async def main():
     """主函数"""
+    
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='StandX 做市机器人')
+    parser.add_argument('--config', type=str, default='.env',
+                        help='配置文件路径 (默认: .env)')
+    parser.add_argument('--log-prefix', type=str, default='',
+                        help='日志文件前缀 (默认: 空)')
+    args = parser.parse_args()
+    
+    # 配置日志（如果指定了前缀则使用前缀）
+    if args.log_prefix:
+        configure_logging(log_prefix=args.log_prefix)
+    
+    # 加载指定的配置文件
+    load_dotenv(args.config)
+    logger.info("使用配置文件: %s", args.config)
 
     # 加载配置
     private_key = os.getenv("WALLET_PRIVATE_KEY")

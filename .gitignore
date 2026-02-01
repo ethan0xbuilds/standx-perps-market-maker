@@ -35,6 +35,8 @@ venv.bak/
 .env
 .env.local
 .env.*.local
+.env.account*
+!.env.account*.example
 
 # IDE
 .vscode/

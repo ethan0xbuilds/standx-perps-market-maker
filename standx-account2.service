@@ -1,0 +1,18 @@
+[Unit]
+Description=StandX Account 2
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/standx
+ExecStart=/root/standx/.venv/bin/python -u /root/standx/market_maker.py --config /root/standx/.env.account2 --log-prefix account2
+ExecStop=/bin/bash -c 'kill -TERM $(pgrep -f "market_maker.py --config.*account2")'
+
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

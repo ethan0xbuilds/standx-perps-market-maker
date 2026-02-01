@@ -18,8 +18,16 @@ def configure_logging(
     log_file: Optional[str] = None,
     max_bytes: int = 10 * 1024 * 1024,
     backup_count: int = 5,
+    log_prefix: Optional[str] = None,
 ):
     """Configure root logger if not already configured.
+
+    Args:
+        level: Log level (e.g., 'INFO', 'DEBUG')
+        log_file: Path to log file
+        max_bytes: Max file size before rotation
+        backup_count: Number of backup files to keep
+        log_prefix: Optional prefix for log file name (e.g., 'account1')
 
     This is intentionally simple for a small project.
     """
@@ -27,7 +35,15 @@ def configure_logging(
         return
 
     env_level = level or os.getenv("LOG_LEVEL", "INFO")
-    env_file = log_file or os.getenv("LOG_FILE", "logs/market_maker.log")
+    
+    # 处理日志文件路径和前缀
+    if log_prefix:
+        # 如果指定了前缀，修改日志文件名
+        default_log = f"logs/{log_prefix}_market_maker.log"
+    else:
+        default_log = "logs/market_maker.log"
+    
+    env_file = log_file or os.getenv("LOG_FILE", default_log)
     try:
         numeric_level = getattr(logging, env_level.upper(), logging.INFO)
     except Exception:

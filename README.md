@@ -19,6 +19,7 @@
 - 下单/撤单：WebSocket 订单流（下单结果/订单状态推送）
 - 容错：Timeout/ConnectionError/ProxyError 自动重试 3 次；WS 断线记录日志并继续使用缓存状态
 - 优雅关闭：支持 SIGTERM/SIGINT 信号处理，停止时自动取消所有订单
+- **多账户支持**：支持在同一服务器运行多个账户，详见 [多账户部署指南](MULTI_ACCOUNT_GUIDE.md)
 
 ## 环境要求
 
@@ -78,9 +79,19 @@ sudo systemctl status standx
 tail -f /root/standx/logs/market_maker.log
 
 # 停止/重启服务
-sudo systemctl stop standx
-sudo systemctl restart standx
+sudo systemctl stop standx-market-maker
+sudo systemctl restart standx-market-maker
 ```
+
+## 多账户部署
+
+如需在同一服务器运行多个账户的做市策略，请参阅 **[多账户部署指南](MULTI_ACCOUNT_GUIDE.md)**。
+
+支持功能：
+- 共享代码，独立配置
+- 独立日志文件（带账户前缀）
+- 独立 systemd 服务管理
+- 资源限制隔离
 
 ## 环境变量 (.env)
 
