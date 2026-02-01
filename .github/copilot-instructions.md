@@ -74,7 +74,6 @@ All config via `.env` (never commit - see .gitignore). Key vars:
 - `WALLET_PRIVATE_KEY` / `ED25519_PRIVATE_KEY` + `ACCESS_TOKEN`
 - `MARKET_MAKER_SYMBOL=BTC-USD`, `MARKET_MAKER_QTY=0.005`
 - `MARKET_MAKER_TARGET_BPS=7.5` (initial spread), `MIN_BPS=7.0`, `MAX_BPS=10.0` (reorder thresholds)
-- `MARKET_MAKER_PRICE_SOURCE=http|websocket` (default: http)
 - `MARKET_MAKER_CHECK_INTERVAL=0.0` (seconds between checks, 0 = no artificial delay)
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (optional)
 

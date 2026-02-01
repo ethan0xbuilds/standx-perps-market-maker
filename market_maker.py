@@ -353,9 +353,6 @@ async def main():
     # 监控间隔
     check_interval = float(os.getenv("MARKET_MAKER_CHECK_INTERVAL", "0.0"))
 
-    # 价格数据源
-    price_source = os.getenv("MARKET_MAKER_PRICE_SOURCE", "http").lower()
-
     # 认证
     logger.info("认证中...")
     token = os.getenv("ACCESS_TOKEN")  # Optional access token for scheme 2
