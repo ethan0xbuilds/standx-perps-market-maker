@@ -23,8 +23,6 @@ import standx_api as api
 from notifier import Notifier
 from logger import get_logger, configure_logging
 
-logger = get_logger(__name__)
-
 
 class MarketMaker:
     """双向限价单做市器"""
@@ -77,12 +75,15 @@ class MarketMaker:
 
         # 优雅关闭相关
         self._shutdown_requested = False
+        
+        # 获取 logger 实例
+        self.logger = get_logger(__name__)
 
     def _setup_signal_handlers(self):
         """设置信号处理器以支持优雅关闭"""
 
         def handle_signal(signum, frame):
-            logger.info("收到信号 %s，准备优雅关闭...", signum)
+            self.self.logger.info("收到信号 %s，准备优雅关闭...", signum)
             self._shutdown_requested = True
 
         signal.signal(signal.SIGTERM, handle_signal)
@@ -113,7 +114,7 @@ class MarketMaker:
             self.exchange_adapter.get_buy_order_count() != 1
             or self.exchange_adapter.get_sell_order_count() != 1
         ):
-            logger.info(
+            self.logger.info(
                 "订单数量异常，买单: %d, 卖单: %d",
                 self.exchange_adapter.get_buy_order_count(),
                 self.exchange_adapter.get_sell_order_count(),
@@ -148,7 +149,7 @@ class MarketMaker:
             / self.exchange_adapter.get_depth_mid_price()
             * 10000
         )
-        logger.info(
+        self.logger.info(
             "买单: %.2f (偏离: %.1f bps), 卖单: %.2f (偏离: %.1f bps)",
             buy_price,
             buy_bps,
@@ -172,7 +173,7 @@ class MarketMaker:
         """下双向限价单"""
         buy_price, sell_price = self.calculate_order_prices(market_price)
 
-        logger.info("下双向限价单 (市价: %.2f)", market_price)
+        self.logger.info("下双向限价单 (市价: %.2f)", market_price)
 
         # 下买单
         try:
@@ -187,13 +188,13 @@ class MarketMaker:
                 margin_mode=self.margin_mode,
                 leverage=self.leverage,
             )
-            logger.info(
+            self.logger.info(
                 "买单: %s @ %.2f",
                 self.qty,
                 buy_price,
             )
         except Exception as e:
-            logger.exception("买单失败: %s", e)
+            self.logger.exception("买单失败: %s", e)
 
         # 下卖单
         try:
@@ -208,13 +209,13 @@ class MarketMaker:
                 margin_mode=self.margin_mode,
                 leverage=self.leverage,
             )
-            logger.info(
+            self.logger.info(
                 "卖单: %s @ %.2f",
                 self.qty,
                 sell_price,
             )
         except Exception as e:
-            logger.exception("卖单失败: %s", e)
+            self.logger.exception("卖单失败: %s", e)
 
     async def refresh_orders(self):
         """刷新当前订单状态"""
@@ -231,16 +232,16 @@ class MarketMaker:
                 elif order["side"] == "sell":
                     self.sell_orders.append(order)
         except Exception as e:
-            logger.warning("刷新订单状态失败: %s", e)
+            self.logger.warning("刷新订单状态失败: %s", e)
 
     async def cancel_all_orders(self):
         """取消所有订单"""
         for order in self.exchange_adapter._orders:
             try:
                 await api.cancel_order(self.auth, order_id=order["id"])
-                logger.info("取消 %s 订单 @ %s", order["side"], order["price"])
+                self.logger.info("取消 %s 订单 @ %s", order["side"], order["price"])
             except Exception as e:
-                logger.exception("取消失败: %s", e)
+                self.logger.exception("取消失败: %s", e)
 
     async def run(self, check_interval: float = 0.5):
         """
@@ -252,10 +253,10 @@ class MarketMaker:
 
         beijing_tz = ZoneInfo("Asia/Shanghai")
         beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
-        logger.info("双向限价单做市策略启动 - %s", beijing_time)
-        logger.info("交易对: %s", self.symbol)
-        logger.info("订单数量: %s", self.qty)
-        logger.info("检查间隔: %s 秒", check_interval)
+        self.logger.info("双向限价单做市策略启动 - %s", beijing_time)
+        self.logger.info("交易对: %s", self.symbol)
+        self.logger.info("订单数量: %s", self.qty)
+        self.logger.info("检查间隔: %s 秒", check_interval)
 
         # 启动通知
         await self.notifier.send(
@@ -267,7 +268,7 @@ class MarketMaker:
 
         # 等待 mid_price 数据就绪（只执行一次）
         while self.exchange_adapter.get_depth_mid_price() is None:
-            logger.info("等待行情数据（mid_price）...")
+            self.logger.info("等待行情数据（mid_price）...")
             await asyncio.sleep(0.2)
 
         # 监控循环
@@ -275,7 +276,7 @@ class MarketMaker:
             while True:
                 # 检查是否收到关闭信号
                 if self._shutdown_requested:
-                    logger.info("收到关闭信号，停止策略")
+                    self.logger.info("收到关闭信号，停止策略")
                     break
 
                 await self.exchange_adapter.close_position(symbol=self.symbol)
@@ -286,7 +287,7 @@ class MarketMaker:
                     need_replace, reason = self.check_price_deviation()
 
                 if need_replace:
-                    logger.info("订单需重挂，原因: %s", reason)
+                    self.logger.info("订单需重挂，原因: %s", reason)
 
                     # 取消所有订单并等待确认
                     await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
@@ -294,7 +295,7 @@ class MarketMaker:
                         0, 0, timeout=3.0
                     )
                     if not cancel_success:
-                        logger.warning("订单取消确认超时，继续下单")
+                        self.logger.warning("订单取消确认超时，继续下单")
 
                     # 下单并等待确认
                     await self.place_orders(self.exchange_adapter.get_depth_mid_price())
@@ -302,7 +303,7 @@ class MarketMaker:
                         count=2, timeout=5.0
                     )
                     if not order_success:
-                        logger.warning("订单下单确认超时，将在下次循环检查")
+                        self.logger.warning("订单下单确认超时，将在下次循环检查")
 
                     # 订单重挂通知：按原因前缀（冒号前）去重 1 小时
                     reason_key = (reason or "reorder").split(":", 1)[0].strip()
@@ -319,21 +320,21 @@ class MarketMaker:
                 await asyncio.sleep(check_interval)
 
         except KeyboardInterrupt:
-            logger.info("收到中断信号，停止策略...")
+            self.logger.info("收到中断信号，停止策略...")
             await self.notifier.send(
                 f"*策略停止*\n" f"交易对: `{self.symbol}`\n" f"原因: 收到中断信号"
             )
         except Exception as e:
-            logger.exception("策略运行出现严重错误: %s", e)
-            logger.info("正在清理订单并退出...")
+            self.logger.exception("策略运行出现严重错误: %s", e)
+            self.logger.info("正在清理订单并退出...")
             await self.notifier.send(
                 f"*致命异常*\n" f"交易对: `{self.symbol}`\n" f"错误: {e}"
             )
 
         # 清理：取消所有订单
-        logger.info("清理所有订单...")
+        self.logger.info("清理所有订单...")
         await self.cleanup()
-        logger.info("策略已停止")
+        self.logger.info("策略已停止")
 
         # 停止通知
         await self.notifier.send(
@@ -360,6 +361,11 @@ async def main():
     # 配置日志（如果指定了前缀则使用前缀）
     if args.log_prefix:
         configure_logging(log_prefix=args.log_prefix)
+    else:
+        configure_logging()  # 使用默认配置
+    
+    # 获取 logger 实例
+    logger = get_logger(__name__)
     
     # 加载指定的配置文件
     load_dotenv(args.config)
@@ -407,7 +413,8 @@ async def main():
         auth.authenticate()
         logger.info("认证成功")
     except Exception as e:
-        notifier.send(f"❌ *认证失败*\n" f"交易对: `{symbol}`\n" f"错误: {e}")
+        logger.exception("认证失败: %s", e)
+        await notifier.send(f"❌ *认证失败*\n" f"交易对: `{symbol}`\n" f"错误: {e}")
         raise
 
     # 创建 StandX 适配器
@@ -435,6 +442,7 @@ async def main():
     logger.info(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     await asyncio.sleep(5)  # 等待初始数据
     logger.info(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
     await standx_adapter._market_stream.close()
 

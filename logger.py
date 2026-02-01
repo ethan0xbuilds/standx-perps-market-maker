@@ -30,10 +30,10 @@ def configure_logging(
         log_prefix: Optional prefix for log file name (e.g., 'account1')
 
     This is intentionally simple for a small project.
+    Note: For multi-account support, this function will reconfigure the logger
+    if log_prefix changes, replacing old file handlers with new ones.
     """
-    if logging.root.handlers:
-        return
-
+    
     env_level = level or os.getenv("LOG_LEVEL", "INFO")
     
     # 处理日志文件路径和前缀
@@ -44,6 +44,7 @@ def configure_logging(
         default_log = "logs/market_maker.log"
     
     env_file = log_file or os.getenv("LOG_FILE", default_log)
+    
     try:
         numeric_level = getattr(logging, env_level.upper(), logging.INFO)
     except Exception:
@@ -52,16 +53,30 @@ def configure_logging(
     logger = logging.getLogger()
     logger.setLevel(numeric_level)
 
+    # 如果已有handlers，检查是否需要更新文件处理器
+    if logging.root.handlers:
+        # 移除旧的文件处理器，保留控制台处理器
+        handlers_to_remove = []
+        for handler in logger.handlers:
+            if isinstance(handler, logging.handlers.RotatingFileHandler):
+                handlers_to_remove.append(handler)
+        
+        for handler in handlers_to_remove:
+            logger.removeHandler(handler)
+            handler.close()
+    
     fmt = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
     formatter = logging.Formatter(fmt)
 
-    # Console handler
-    ch = logging.StreamHandler()
-    ch.setLevel(numeric_level)
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
+    # 如果没有控制台处理器，添加一个
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.handlers.RotatingFileHandler) 
+               for h in logger.handlers):
+        ch = logging.StreamHandler()
+        ch.setLevel(numeric_level)
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
 
-    # File handler (rotating)
+    # File handler (rotating) - always add for multi-account support
     try:
         os.makedirs(os.path.dirname(env_file), exist_ok=True)
         fh = logging.handlers.RotatingFileHandler(env_file, maxBytes=max_bytes, backupCount=backup_count)

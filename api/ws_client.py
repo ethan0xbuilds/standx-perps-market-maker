@@ -13,8 +13,6 @@ from websockets.exceptions import ConnectionClosed
 from logger import get_logger
 from standx_auth import StandXAuth
 
-logger = get_logger(__name__)
-
 
 class StandXMarketStream:
     """Market Stream - 市场数据流"""
@@ -26,6 +24,7 @@ class StandXMarketStream:
         self.connected = False
         self.authenticated = False
         self._connect_time: Optional[float] = None  # 记录连接时间，用于 24 小时重连
+        self.logger = get_logger(__name__)
 
     async def connect(self):
         """建立 WebSocket 连接"""
@@ -134,6 +133,7 @@ class StandXOrderStream:
         self.connected = False
         self.auth: Optional[StandXAuth] = None  # StandXAuth 实例，用于签名
         self._connect_time: Optional[float] = None  # 记录连接时间，用于 24 小时重连
+        self.logger = get_logger(__name__)
 
     async def connect(self):
         """建立 WebSocket 连接"""
@@ -166,11 +166,11 @@ class StandXOrderStream:
                     # 异步处理消息，避免阻塞接收循环
                     asyncio.create_task(self._handle_message(data))
                 except Exception as e:
-                    logger.exception(f"处理消息错误: {e}")
+                    self.logger.exception(f"处理消息错误: {e}")
         except ConnectionClosed:
             self.connected = False
         except Exception as e:
-            logger.exception(f"接收消息错误: {e}")
+            self.logger.exception(f"接收消息错误: {e}")
             self.connected = False
 
     async def _handle_message(self, data: Dict[str, Any]):

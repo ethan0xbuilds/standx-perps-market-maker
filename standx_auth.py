@@ -100,6 +100,9 @@ class StandXAuth:
         Raises:
             ValueError: If parameters don't match either scheme
         """
+        # 初始化logger
+        self.logger = get_logger(__name__)
+        
         # Normalize None/empty to None
         private_key = private_key if private_key else None
         ed25519_key = ed25519_key if ed25519_key else None

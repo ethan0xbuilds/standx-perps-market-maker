@@ -11,8 +11,6 @@ from logger import get_logger
 from standx_api import query_positions
 from standx_auth import StandXAuth
 
-logger = get_logger(__name__)
-
 
 class StandXAdapter:
     """
@@ -29,6 +27,7 @@ class StandXAdapter:
         self._orders: list = []
         self._position: Optional[dict] = {}
         self._order_confirmed_count: int = 0  # 追踪订单确认次数，用于等待机制
+        self.logger = get_logger(__name__)
 
     async def connect_market_stream(self) -> StandXMarketStream:
         """
@@ -85,7 +84,7 @@ class StandXAdapter:
 
                     if mid_price == self._depth_mid_price:
                         # 中间价未变，打印DEBUG日志表示接收到数据但价格未变
-                        logger.debug(
+                        self.logger.debug(
                             "Depth book 中间价未变: %.4f, 距上次更新 %.2f 秒",
                             mid_price,
                             time_diff,
@@ -93,7 +92,7 @@ class StandXAdapter:
                         return
                     else:
                         self._depth_mid_price = mid_price
-                        logger.info(
+                        self.logger.info(
                             "Depth book 中间价更新: %.4f, 距上次更新 %.2f 秒",
                             mid_price,
                             time_diff,
@@ -101,7 +100,7 @@ class StandXAdapter:
                         self._last_price_update_time = time.time()
                         self._price_updated_and_processed = False
         except Exception as e:
-            logger.exception("处理 depth_book 数据失败: %s", e)
+            self.logger.exception("处理 depth_book 数据失败: %s", e)
 
     async def subscribe_depth_book(self, symbol: str = "BTC-USD"):
         """
@@ -138,7 +137,7 @@ class StandXAdapter:
             if data.get("channel") == "order":
                 order_data = data.get("data", {})
                 # 这里只做简单日志，后续可扩展为事件分发、状态同步等
-                logger.info(
+                self.logger.info(
                     "订单推送: id=%s, symbol=%s, side=%s, status=%s, qty=%s, price=%s, fill_qty=%s, fill_avg_price=%s",
                     order_data.get("id"),
                     order_data.get("symbol"),
@@ -156,17 +155,17 @@ class StandXAdapter:
                         and order_data.get("status") == "canceled"
                     ):
                         self._orders.pop(idx)
-                        logger.info("订单已取消，移除订单 id=%s", order_data.get("id"))
-                        logger.info("当前订单总数: %d", len(self._orders))
+                        self.logger.info("订单已取消，移除订单 id=%s", order_data.get("id"))
+                        self.logger.info("当前订单总数: %d", len(self._orders))
                         break
                 else:
                     # 新增订单（如未取消且 id 不在当前订单列表中）
-                    logger.info("新增订单 id=%s", order_data.get("id"))
+                    self.logger.info("新增订单 id=%s", order_data.get("id"))
                     self._orders.append(order_data)
                     self._order_confirmed_count += 1  # 订单确认计数+1
-                    logger.info("当前订单总数: %d", len(self._orders))
+                    self.logger.info("当前订单总数: %d", len(self._orders))
         except Exception as e:
-            logger.exception("处理 order 数据失败: %s", e)
+            self.logger.exception("处理 order 数据失败: %s", e)
 
     async def on_position(self, data):
         """
@@ -177,7 +176,7 @@ class StandXAdapter:
         try:
             if data.get("channel") == "position":
                 pos_data = data.get("data", {})
-                logger.info(
+                self.logger.info(
                     "持仓推送: id=%s, symbol=%s, qty=%s, entry_price=%s, leverage=%s, margin_mode=%s, status=%s, realized_pnl=%s",
                     pos_data.get("id"),
                     pos_data.get("symbol"),
@@ -190,7 +189,7 @@ class StandXAdapter:
                 )
                 self._position = pos_data
         except Exception as e:
-            logger.exception("处理 position 数据失败: %s", e)
+            self.logger.exception("处理 position 数据失败: %s", e)
 
     async def _authenticate_and_subscribe(self):
         """
@@ -287,7 +286,7 @@ class StandXAdapter:
         start_time = time.time()
         while time.time() - start_time < timeout:
             if self._order_confirmed_count >= target_count:
-                logger.info(
+                self.logger.info(
                     "订单确认完成: 已确认 %d 个订单，耗时 %.2f 秒",
                     count,
                     time.time() - start_time,
@@ -295,7 +294,7 @@ class StandXAdapter:
                 return True
             await asyncio.sleep(0.05)  # 50ms检查一次
 
-        logger.warning(
+        self.logger.warning(
             "订单确认超时: 期望 %d 个，实际收到 %d 个，耗时 %.2f 秒",
             count,
             self._order_confirmed_count - initial_count,
@@ -321,7 +320,7 @@ class StandXAdapter:
                 self.get_buy_order_count() == target_buy
                 and self.get_sell_order_count() == target_sell
             ):
-                logger.info(
+                self.logger.info(
                     "订单数量达到目标: 买单 %d, 卖单 %d，耗时 %.2f 秒",
                     target_buy,
                     target_sell,
@@ -330,7 +329,7 @@ class StandXAdapter:
                 return True
             await asyncio.sleep(0.05)  # 50ms检查一次
 
-        logger.warning(
+        self.logger.warning(
             "等待订单数量超时: 目标(买%d/卖%d), 实际(买%d/卖%d), 耗时 %.2f 秒",
             target_buy,
             target_sell,
@@ -346,7 +345,7 @@ class StandXAdapter:
         Args:
             data (dict): 登录成功数据
         """
-        logger.info("WebSocket 登录成功: %s", data)
+        self.logger.info("WebSocket 登录成功: %s", data)
 
     def on_new_order(self, data):
         """
@@ -354,7 +353,7 @@ class StandXAdapter:
         Args:
             data (dict): 新订单数据
         """
-        logger.info("通过订单流下单成功: %s", data)
+        self.logger.info("通过订单流下单成功: %s", data)
 
     def on_cancel_order(self, data):
         """
@@ -362,7 +361,7 @@ class StandXAdapter:
         Args:
             data (dict): 取消订单数据
         """
-        logger.info("通过订单流取消订单成功: %s", data)
+        self.logger.info("通过订单流取消订单成功: %s", data)
 
     async def connect_order_stream(self, auth):
         """
@@ -444,7 +443,7 @@ class StandXAdapter:
         side = "sell" if qty_value > 0 else "buy"
         qty = str(abs(qty_value))
 
-        logger.info(
+        self.logger.info(
             "准备通过市价单平仓: symbol=%s, side=%s, qty=%s",
             symbol,
             side,
@@ -481,9 +480,9 @@ class StandXAdapter:
                     cl_ord_id=order["cl_ord_id"],
                     callback=self.on_cancel_order,
                 )
-                logger.info("取消 %s 订单: %s", order["side"], order["cl_ord_id"])
+                self.logger.info("取消 %s 订单: %s", order["side"], order["cl_ord_id"])
             except Exception as e:
-                logger.exception("取消失败: %s", e)
+                self.logger.exception("取消失败: %s", e)
 
     async def cleanup(self):
         """清理资源，关闭 WebSocket 连接"""
