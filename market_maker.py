@@ -334,16 +334,6 @@ class MarketMaker:
                 f"*致命异常*\n" f"交易对: `{self.symbol}`\n" f"错误: {e}"
             )
 
-        # 清理：取消所有订单
-        self.logger.info("清理所有订单...")
-        await self.cleanup()
-        self.logger.info("策略已停止")
-
-        # 停止通知
-        await self.notifier.send(
-            f"*做市策略已停止*\n" f"交易对: `{self.symbol}`\n" f"订单已清理完成"
-        )
-
     async def cleanup(self):
         """清理所有订单和资源"""
         await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
@@ -447,6 +437,11 @@ async def main():
         # 确保清理资源，即使被Ctrl+C中断也会执行
         logger.info("执行清理操作...")
         await market_maker.cleanup()
+        
+        # 停止通知
+        await notifier.send(
+            f"*做市策略已停止*\n" f"交易对: `{symbol}`\n" f"订单已清理完成"
+        )
 
 
 if __name__ == "__main__":
