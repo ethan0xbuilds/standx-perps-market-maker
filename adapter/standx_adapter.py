@@ -26,8 +26,11 @@ class StandXAdapter:
         self._price_updated_and_processed: bool = True
         self._orders: list = []
         self._position: Optional[dict] = {}
+        self._last_position_qty: float = 0  # 追踪上一次的持仓数量
         self._order_confirmed_count: int = 0  # 追踪订单确认次数，用于等待机制
         self.logger = get_logger(__name__)
+        self.notifier = None
+        self.account_name = None
 
     async def connect_market_stream(self) -> StandXMarketStream:
         """
@@ -187,6 +190,34 @@ class StandXAdapter:
                     pos_data.get("status"),
                     pos_data.get("realized_pnl"),
                 )
+                
+                # 检测持仓变化并发送通知
+                current_qty = float(pos_data.get("qty", 0))
+                symbol = pos_data.get("symbol", "")
+                
+                # 从无持仓变为有持仓
+                if self._last_position_qty == 0 and current_qty != 0:
+                    direction = "多头" if current_qty > 0 else "空头"
+                    if self.notifier:
+                        await self.notifier.send(
+                            f"*新增持仓*\n"
+                            f"账户: `{self.account_name}`\n"
+                            f"交易对: `{symbol}`\n"
+                            f"方向: {direction}\n"
+                            f"数量: {abs(current_qty)}\n"
+                            f"入场价: {pos_data.get('entry_price', 'N/A')}"
+                        )
+                # 从有持仓变为无持仓
+                elif self._last_position_qty != 0 and current_qty == 0:
+                    if self.notifier:
+                        await self.notifier.send(
+                            f"*持仓已清*\n"
+                            f"账户: `{self.account_name}`\n"
+                            f"交易对: `{symbol}`\n"
+                            f"已实现盈亏: {pos_data.get('realized_pnl', 'N/A')}"
+                        )
+                
+                self._last_position_qty = current_qty
                 self._position = pos_data
         except Exception as e:
             self.logger.exception("处理 position 数据失败: %s", e)
@@ -424,7 +455,6 @@ class StandXAdapter:
             callback=self.on_new_order,
         )
 
-    # 新增一个方法，通过市价订单将持仓平掉
     async def close_position(self, symbol: str):
         """
         通过市价订单平掉当前持仓
@@ -450,13 +480,34 @@ class StandXAdapter:
             qty,
         )
 
-        await self.new_order(
-            symbol=symbol,
-            side=side,
-            order_type="market",
-            qty=qty,
-            reduce_only=True,
-        )
+        try:
+            await self.new_order(
+                symbol=symbol,
+                side=side,
+                order_type="market",
+                qty=qty,
+                reduce_only=True,
+            )
+            
+            # 平仓成功发送通知
+            if self.notifier:
+                await self.notifier.send(
+                    f"*持仓平仓*\n"
+                    f"账户: `{self.account_name}`\n"
+                    f"交易对: `{symbol}`\n"
+                    f"方向: {side}\n"
+                    f"数量: {qty}"
+                )
+        except Exception as e:
+            self.logger.exception("平仓失败: %s", e)
+            # 平仓失败发送通知
+            if self.notifier:
+                await self.notifier.send(
+                    f"*平仓失败*\n"
+                    f"账户: `{self.account_name}`\n"
+                    f"交易对: `{symbol}`\n"
+                    f"错误: {e}"
+                )
 
     async def cancel_all_orders(self, symbol: Optional[str] = None):
         """

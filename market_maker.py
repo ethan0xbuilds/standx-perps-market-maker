@@ -219,32 +219,6 @@ class MarketMaker:
         except Exception as e:
             self.logger.exception("卖单失败: %s", e)
 
-    async def refresh_orders(self):
-        """刷新当前订单状态"""
-        try:
-            open_orders = await api.query_open_orders(self.auth, symbol=self.symbol)
-            orders = open_orders.get("result", [])
-
-            self.buy_orders = []
-            self.sell_orders = []
-
-            for order in orders:
-                if order["side"] == "buy":
-                    self.buy_orders.append(order)
-                elif order["side"] == "sell":
-                    self.sell_orders.append(order)
-        except Exception as e:
-            self.logger.warning("刷新订单状态失败: %s", e)
-
-    async def cancel_all_orders(self):
-        """取消所有订单"""
-        for order in self.exchange_adapter._orders:
-            try:
-                await api.cancel_order(self.auth, order_id=order["id"])
-                self.logger.info("取消 %s 订单 @ %s", order["side"], order["price"])
-            except Exception as e:
-                self.logger.exception("取消失败: %s", e)
-
     async def run(self, check_interval: float = 0.5):
         """
         运行做市策略（无限运行）
@@ -411,7 +385,12 @@ async def main():
 
     # 创建做市器
     # 从log_prefix获取账户名
-    account_name = args.log_prefix
+    account_name = args.log_prefix or symbol
+    
+    # 设置adapter的通知信息
+    standx_adapter.notifier = notifier
+    standx_adapter.account_name = account_name
+    
     market_maker = MarketMaker(
         auth=auth,
         symbol=symbol,
