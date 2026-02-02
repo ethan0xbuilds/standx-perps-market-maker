@@ -233,7 +233,7 @@ class MarketMaker:
         except Exception as e:
             self.logger.exception("卖单失败: %s", e)
 
-    async def run(self, check_interval: float = 0.5):
+    async def run(self, check_interval: float = 0.025):
         """
         运行做市策略（无限运行）
 
@@ -289,7 +289,8 @@ class MarketMaker:
                         0, 0, timeout=3.0
                     )
                     if not cancel_success:
-                        self.logger.warning("订单取消确认超时，继续下单")
+                        self.logger.warning("订单取消确认超时，跳过下单")
+                        continue
 
                     # 下单时等待最新价格，并等待确认
                     await self.place_orders()
@@ -298,6 +299,7 @@ class MarketMaker:
                     )
                     if not order_success:
                         self.logger.warning("订单下单确认超时，将在下次循环检查")
+                        continue
 
                 # 等待下一个检查周期
                 await asyncio.sleep(check_interval)
