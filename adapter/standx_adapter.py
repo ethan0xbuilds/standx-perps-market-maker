@@ -176,6 +176,12 @@ class StandXAdapter:
                         self._orders[existing_order_idx] = order_data
                         self.logger.info("订单已更新 id=%s", order_id)
                 else:
+                    if order_status in ["canceled", "filled"]:
+                        # 新订单已是取消或成交状态，忽略不处理
+                        self.logger.info(
+                            "收到已取消/已成交的新订单，忽略 id=%s", order_id
+                        )
+                        return
                     # 新订单，追加到 _orders 列表
                     self.logger.info("新增订单 id=%s", order_id)
                     self._orders.append(order_data)
