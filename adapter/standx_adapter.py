@@ -27,6 +27,7 @@ class StandXAdapter:
         self._orders: list = []
         self._position: Optional[dict] = {}
         self._last_position_qty: float = 0  # 追踪上一次的持仓数量
+        self._last_order_count: int = 0  # 追踪上一次的订单总数，用于检测超量通知
         self._order_confirmed_count: int = 0  # 追踪订单确认次数，用于等待机制
         self._price_event: asyncio.Event = asyncio.Event()  # 用于等待新价格更新
         self.logger = get_logger(__name__)
@@ -153,24 +154,55 @@ class StandXAdapter:
                     order_data.get("fill_qty"),
                     order_data.get("fill_avg_price"),
                 )
-                # 订单取消时移除订单，否则新增订单
+                
+                order_id = order_data.get("id")
+                order_status = order_data.get("status")
+                
+                # 查找是否存在相同 id 的订单
+                existing_order_idx = None
                 for idx, order in enumerate(self._orders):
-                    if (
-                        order["id"] == order_data.get("id")
-                        and order_data.get("status") == "canceled"
-                    ):
-                        self._orders.pop(idx)
-                        self.logger.info("订单已取消，移除订单 id=%s", order_data.get("id"))
-                        self.logger.info("当前订单总数: %d", len(self._orders))
+                    if order["id"] == order_id:
+                        existing_order_idx = idx
                         break
+                
+                if existing_order_idx is not None:
+                    # 订单 id 已存在（更新或删除现有订单）
+                    if order_status in ["canceled", "filled"]:
+                        # 订单已被取消或已成交，从列表中移除
+                        self._orders.pop(existing_order_idx)
+                        self.logger.info("订单已取消，移除订单 id=%s", order_id)
+                    else:
+                        # 订单状态更新，用最新数据覆盖缓存
+                        self._orders[existing_order_idx] = order_data
+                        self.logger.info("订单已更新 id=%s", order_id)
                 else:
-                    # 新增订单（如未取消且 id 不在当前订单列表中）
-                    self.logger.info("新增订单 id=%s", order_data.get("id"))
+                    # 新订单，追加到 _orders 列表
+                    self.logger.info("新增订单 id=%s", order_id)
                     self._orders.append(order_data)
                     self._order_confirmed_count += 1  # 订单确认计数+1
-                    self.logger.info("当前订单总数: %d", len(self._orders))
+                
+                # 检测订单总数是否超过2，发送通知
+                self.logger.info("当前订单总数: %d", len(self._orders))
+                await self._check_order_count_exceeded()
         except Exception as e:
             self.logger.exception("处理 order 数据失败: %s", e)
+
+    async def _check_order_count_exceeded(self):
+        """
+        检测订单总数是否超过2，如果超过则发送通知
+        """
+        current_count = len(self._orders)
+        if self._last_order_count <= 2 and current_count > 2:
+            # 从 <= 2 变到 > 2，发送通知
+            if self.notifier:
+                await self.notifier.send(
+                    f"⚠️ *订单总数超过2*\n"
+                    f"账户: `{self.account_name}`\n"
+                    f"订单总数: {current_count}\n"
+                    f"买单: {self.get_buy_order_count()}, 卖单: {self.get_sell_order_count()}"
+                )
+            self.logger.warning("订单总数超过2: %d", current_count)
+        self._last_order_count = current_count
 
     async def on_position(self, data):
         """
