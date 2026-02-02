@@ -531,7 +531,6 @@ class StandXAdapter:
                     cl_ord_id=order["cl_ord_id"],
                     callback=self.on_cancel_order,
                 )
-                self.logger.info("取消 %s 订单: %s", order["side"], order["cl_ord_id"])
             except Exception as e:
                 self.logger.exception("取消失败: %s", e)
 
