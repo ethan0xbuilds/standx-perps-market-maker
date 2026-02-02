@@ -171,8 +171,22 @@ class MarketMaker:
         self.exchange_adapter.mark_price_processed()
         return False, ""
 
-    async def place_orders(self, market_price: float):
-        """下双向限价单"""
+    async def place_orders(self, market_price: float = None):
+        """下双向限价单
+        
+        Args:
+            market_price: 市场价格，如果为None则等待最新价格更新
+        """
+        # 如果未提供价格，则等待最新价格更新
+        if market_price is None:
+            if await self.exchange_adapter.wait_for_new_price(timeout=2.0):
+                # 成功等待到新价格
+                market_price = self.exchange_adapter.get_depth_mid_price()
+            else:
+                # 超时则取消下单
+                self.logger.warning("获取市场价格超时，取消下单")
+                return
+        
         buy_price, sell_price = self.calculate_order_prices(market_price)
 
         self.logger.info("下双向限价单 (市价: %.2f)", market_price)
@@ -277,8 +291,8 @@ class MarketMaker:
                     if not cancel_success:
                         self.logger.warning("订单取消确认超时，继续下单")
 
-                    # 下单并等待确认
-                    await self.place_orders(self.exchange_adapter.get_depth_mid_price())
+                    # 下单时等待最新价格，并等待确认
+                    await self.place_orders()
                     order_success = await self.exchange_adapter.wait_for_orders(
                         count=2, timeout=5.0
                     )

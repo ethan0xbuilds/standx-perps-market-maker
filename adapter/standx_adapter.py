@@ -28,6 +28,7 @@ class StandXAdapter:
         self._position: Optional[dict] = {}
         self._last_position_qty: float = 0  # 追踪上一次的持仓数量
         self._order_confirmed_count: int = 0  # 追踪订单确认次数，用于等待机制
+        self._price_event: asyncio.Event = asyncio.Event()  # 用于等待新价格更新
         self.logger = get_logger(__name__)
         self.notifier = None
         self.account_name = None
@@ -102,6 +103,7 @@ class StandXAdapter:
                         )
                         self._last_price_update_time = time.time()
                         self._price_updated_and_processed = False
+                        self._price_event.set()  # 设置事件，通知等待者有新价格
         except Exception as e:
             self.logger.exception("处理 depth_book 数据失败: %s", e)
 
@@ -369,6 +371,23 @@ class StandXAdapter:
             timeout,
         )
         return False
+
+    async def wait_for_new_price(self, timeout: float = 2.0) -> bool:
+        """
+        等待获取新的价格更新
+        Args:
+            timeout: 超时时间（秒），默认2.0秒
+        Returns:
+            bool: 是否在超时前收到新价格，True表示成功，False表示超时
+        """
+        self._price_event.clear()  # 清空事件，准备等待新价格
+        try:
+            await asyncio.wait_for(self._price_event.wait(), timeout=timeout)
+            self.logger.debug("已获取新价格，无需等待")
+            return True
+        except asyncio.TimeoutError:
+            self.logger.warning("等待新价格超时 (%.1f秒)，取消下单", timeout)
+            return False
 
     def on_login(self, data):
         """

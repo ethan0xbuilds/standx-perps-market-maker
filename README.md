@@ -199,6 +199,7 @@ python tests/test_notification.py
 
 ## 已知行为与策略要点
 
+- **价格同步机制**：下单前主动等待最新价格更新（通过 asyncio.Event），超时 2 秒则取消下单，保证订单价格新鲜度
 - 检查间隔可配置（默认 0 秒）；价格偏离超出 [min_bps, max_bps] 时重挂
 - 检测到持仓时立即市价平仓，保证不违反杠杆限制
 - 价格来源为 depth_book 中间价（mid_price），仅在价格更新后触发偏离检查
