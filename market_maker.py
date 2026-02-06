@@ -235,10 +235,10 @@ class MarketMaker:
 
     async def run(self, check_interval: float = 0.025):
         """
-        运行做市策略（无限运行）
+        运行做市策略（事件驱动架构）
 
         Args:
-            check_interval: 检查间隔（秒，默认0.5秒）
+            check_interval: 保留参数以兼容旧配置，实际使用事件驱动机制
         """
         
         # 设置信号处理器
@@ -246,10 +246,9 @@ class MarketMaker:
 
         beijing_tz = ZoneInfo("Asia/Shanghai")
         beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
-        self.logger.info("双向限价单做市策略启动 - %s", beijing_time)
+        self.logger.info("双向限价单做市策略启动（事件驱动模式） - %s", beijing_time)
         self.logger.info("交易对: %s", self.symbol)
         self.logger.info("订单数量: %s", self.qty)
-        self.logger.info("检查间隔: %s 秒", check_interval)
 
         # 启动通知
         await self.notifier.send(
@@ -258,6 +257,7 @@ class MarketMaker:
             f"时间: {beijing_time}\n"
             f"交易对: `{self.symbol}`\n"
             f"数量: {self.qty}\n"
+            f"模式: 事件驱动\n"
         )
 
         # 等待 mid_price 数据就绪（只执行一次）
@@ -265,44 +265,13 @@ class MarketMaker:
             self.logger.info("等待行情数据（mid_price）...")
             await asyncio.sleep(0.2)
 
-        # 监控循环
+        # 创建独立的监控任务
         try:
-            while True:
-                # 检查是否收到关闭信号
-                if self._shutdown_requested:
-                    self.logger.info("收到关闭信号，停止策略")
-                    break
-
-                await self.exchange_adapter.close_position(symbol=self.symbol)
-
-                # 检查订单状态和偏离度
-                need_replace, reason = self.check_order_count()
-                if not need_replace:
-                    need_replace, reason = self.check_price_deviation()
-
-                if need_replace:
-                    self.logger.info("订单需重挂，原因: %s", reason)
-
-                    # 取消所有订单并等待确认
-                    await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
-                    cancel_success = await self.exchange_adapter.wait_for_order_count(
-                        0, 0, timeout=3.0
-                    )
-                    if not cancel_success:
-                        self.logger.warning("订单取消确认超时，跳过下单")
-                        continue
-
-                    # 下单时等待最新价格，并等待确认
-                    await self.place_orders()
-                    order_success = await self.exchange_adapter.wait_for_orders(
-                        count=2, timeout=5.0
-                    )
-                    if not order_success:
-                        self.logger.warning("订单下单确认超时，将在下次循环检查")
-                        continue
-
-                # 等待下一个检查周期
-                await asyncio.sleep(check_interval)
+            price_check_task = asyncio.create_task(self._price_monitor_loop())
+            position_check_task = asyncio.create_task(self._position_monitor_loop())
+            
+            # 等待任务完成（通常是收到关闭信号）
+            await asyncio.gather(price_check_task, position_check_task)
 
         except KeyboardInterrupt:
             self.logger.info("收到中断信号，停止策略...")
@@ -315,6 +284,84 @@ class MarketMaker:
             await self.notifier.send(
                 f"*致命异常*\n" f"账户: `{self.account_name}`\n" f"交易对: `{self.symbol}`\n" f"错误: {e}"
             )
+
+    async def _price_monitor_loop(self):
+        """
+        价格监控循环 - 仅在价格变化时触发检查
+        使用事件驱动机制，避免频繁轮询
+        """
+        self.logger.info("价格监控任务启动")
+        
+        while not self._shutdown_requested:
+            try:
+                # 等待新价格更新（阻塞直到有新价格或超时）
+                price_updated = await self.exchange_adapter.wait_for_new_price(timeout=30.0)
+                
+                if not price_updated:
+                    # 30秒无新价格更新，继续等待
+                    self.logger.debug("30秒内无价格更新，继续等待...")
+                    continue
+                
+                # 检查订单状态和偏离度
+                need_replace, reason = self.check_order_count()
+                if not need_replace:
+                    need_replace, reason = self.check_price_deviation()
+                
+                if need_replace:
+                    await self._replace_orders(reason)
+                    
+            except asyncio.TimeoutError:
+                # wait_for_new_price 超时，继续循环
+                continue
+            except Exception as e:
+                self.logger.exception("价格监控循环异常: %s", e)
+                await asyncio.sleep(1.0)  # 出错后等待1秒再继续
+        
+        self.logger.info("价格监控任务结束")
+
+    async def _position_monitor_loop(self):
+        """
+        持仓监控循环 - 定期检查并平仓（低频）
+        持仓检查频率较低，1秒一次即可
+        """
+        self.logger.info("持仓监控任务启动")
+        
+        while not self._shutdown_requested:
+            try:
+                await self.exchange_adapter.close_position(symbol=self.symbol)
+                await asyncio.sleep(1.0)  # 持仓检查频率：1秒/次
+            except Exception as e:
+                self.logger.exception("持仓监控循环异常: %s", e)
+                await asyncio.sleep(1.0)  # 出错后等待1秒再继续
+        
+        self.logger.info("持仓监控任务结束")
+
+    async def _replace_orders(self, reason: str):
+        """
+        订单重挂逻辑（提取为独立方法）
+        
+        Args:
+            reason: 重挂原因
+        """
+        self.logger.info("订单需重挂，原因: %s", reason)
+        
+        # 取消所有订单并等待确认
+        await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
+        cancel_success = await self.exchange_adapter.wait_for_order_count(
+            0, 0, timeout=3.0
+        )
+        if not cancel_success:
+            self.logger.warning("订单取消确认超时，跳过下单")
+            return
+        
+        # 下单时等待最新价格，并等待确认
+        await self.place_orders()
+        order_success = await self.exchange_adapter.wait_for_orders(
+            count=2, timeout=5.0
+        )
+        if not order_success:
+            self.logger.warning("订单下单确认超时，将在下次循环检查")
+            return
 
     async def cleanup(self):
         """清理所有订单和资源"""
