@@ -25,12 +25,16 @@ class StandXAdapter:
         self._depth_book_data: Optional[dict] = None  # 保存完整的盘口数据
         self._last_price_update_time: Optional[float] = None
         self._price_updated_and_processed: bool = True
-        self._orders: list = []
+        self._orders_dict: dict = {}  # 改用字典存储，key为order_id
         self._position: Optional[dict] = {}
         self._last_position_qty: float = 0  # 追踪上一次的持仓数量
         self._last_order_count: int = 0  # 追踪上一次的订单总数，用于检测超量通知
         self._order_confirmed_count: int = 0  # 追踪订单确认次数，用于等待机制
         self._price_event: asyncio.Event = asyncio.Event()  # 用于等待新价格更新
+        self._last_full_sync_time: float = 0  # 上次全量同步时间
+        self._sync_interval: float = 30.0  # 订单同步间隔，默认30秒
+        self._sync_task: Optional[asyncio.Task] = None  # 同步任务
+        self._auth: Optional[StandXAuth] = None  # 保存auth实例用于查询
         self.logger = get_logger(__name__)
         self.notifier = None
         self.account_name = None
@@ -151,61 +155,51 @@ class StandXAdapter:
 
     async def on_order(self, data):
         """
-        处理 order 频道推送
+        处理 order 频道推送（增量更新）
         Args:
             data (dict): 订单推送数据
         """
         try:
             if data.get("channel") == "order":
                 order_data = data.get("data", {})
-                # 这里只做简单日志，后续可扩展为事件分发、状态同步等
+                order_id = order_data.get("id")
+                order_status = order_data.get("status")
+                
+                # 详细日志
                 self.logger.info(
                     "订单推送: id=%s, symbol=%s, side=%s, status=%s, qty=%s, price=%s, fill_qty=%s, fill_avg_price=%s",
-                    order_data.get("id"),
+                    order_id,
                     order_data.get("symbol"),
                     order_data.get("side"),
-                    order_data.get("status"),
+                    order_status,
                     order_data.get("qty"),
                     order_data.get("price"),
                     order_data.get("fill_qty"),
                     order_data.get("fill_avg_price"),
                 )
                 
-                order_id = order_data.get("id")
-                order_status = order_data.get("status")
-                
-                # 查找是否存在相同 id 的订单
-                existing_order_idx = None
-                for idx, order in enumerate(self._orders):
-                    if order["id"] == order_id:
-                        existing_order_idx = idx
-                        break
-                
-                if existing_order_idx is not None:
-                    # 订单 id 已存在（更新或删除现有订单）
-                    if order_status in ["canceled", "filled"]:
-                        # 订单已被取消或已成交，从列表中移除
-                        self._orders.pop(existing_order_idx)
-                        self.logger.info("订单已取消，移除订单 id=%s", order_id)
+                # 增量更新逻辑
+                if order_status in ["canceled", "filled"]:
+                    # 已完成的订单，从缓存中移除
+                    if order_id in self._orders_dict:
+                        del self._orders_dict[order_id]
+                        self.logger.info("订单已完成，移除 id=%s", order_id)
                     else:
-                        # 订单状态更新，用最新数据覆盖缓存
-                        self._orders[existing_order_idx] = order_data
-                        self.logger.info("订单已更新 id=%s", order_id)
+                        self.logger.debug("收到已完成订单但本地不存在 id=%s", order_id)
                 else:
-                    if order_status in ["canceled", "filled"]:
-                        # 新订单已是取消或成交状态，忽略不处理
-                        self.logger.info(
-                            "收到已取消/已成交的新订单，忽略 id=%s", order_id
-                        )
-                        return
-                    # 新订单，追加到 _orders 列表
-                    self.logger.info("新增订单 id=%s", order_id)
-                    self._orders.append(order_data)
-                    self._order_confirmed_count += 1  # 订单确认计数+1
+                    # 活跃订单，更新或添加到缓存
+                    if order_id in self._orders_dict:
+                        self.logger.info("订单已更新 id=%s", order_id)
+                    else:
+                        self.logger.info("新增订单 id=%s", order_id)
+                        self._order_confirmed_count += 1
+                    
+                    self._orders_dict[order_id] = order_data
                 
-                # 检测订单总数是否超过2，发送通知
-                self.logger.info("当前订单总数: %d", len(self._orders))
+                # 检测订单总数是否超过2
+                self.logger.info("当前订单总数: %d", len(self._orders_dict))
                 await self._check_order_count_exceeded()
+                
         except Exception as e:
             self.logger.exception("处理 order 数据失败: %s", e)
 
@@ -213,7 +207,7 @@ class StandXAdapter:
         """
         检测订单总数是否超过2，如果超过则发送通知
         """
-        current_count = len(self._orders)
+        current_count = len(self._orders_dict)
         if self._last_order_count <= 2 and current_count > 2:
             # 从 <= 2 变到 > 2，发送通知
             if self.notifier:
@@ -294,15 +288,73 @@ class StandXAdapter:
         await self._market_stream.subscribe("order", callback=self.on_order)
         await self._market_stream.subscribe("position", callback=self.on_position)
 
+    async def _sync_orders_from_server(self):
+        """从服务器全量同步订单状态（使用HTTP API）"""
+        try:
+            from standx_api import query_open_orders
+            
+            self.logger.info("开始全量同步订单状态...")
+            result = await query_open_orders(self._auth, symbol=None, limit=100)
+            
+            server_orders = result.get("result", [])
+            server_order_ids = {order["id"] for order in server_orders}
+            
+            # 更新本地缓存为字典格式
+            new_orders_dict = {order["id"]: order for order in server_orders}
+            
+            # 检测本地多余的订单（孤儿订单）
+            local_order_ids = set(self._orders_dict.keys())
+            orphaned_ids = local_order_ids - server_order_ids
+            
+            if orphaned_ids:
+                self.logger.warning("检测到孤儿订单（本地有但服务器无）: %s", orphaned_ids)
+                if self.notifier:
+                    await self.notifier.send(
+                        f"⚠️ *检测到孤儿订单*\n"
+                        f"账户: `{self.account_name}`\n"
+                        f"订单ID: {list(orphaned_ids)}\n"
+                        f"已从本地缓存清除"
+                    )
+            
+            # 检测服务器多余的订单（未推送的新订单）
+            new_ids = server_order_ids - local_order_ids
+            if new_ids:
+                self.logger.warning("检测到未推送的订单（服务器有但本地无）: %s", new_ids)
+            
+            # 替换为最新数据
+            self._orders_dict = new_orders_dict
+            self._last_full_sync_time = time.time()
+            
+            self.logger.info(
+                "订单同步完成: 服务器 %d 个, 本地 %d 个, 孤儿 %d 个, 新增 %d 个",
+                len(server_order_ids),
+                len(local_order_ids),
+                len(orphaned_ids),
+                len(new_ids)
+            )
+            
+        except Exception as e:
+            self.logger.exception("订单同步失败: %s", e)
+
+    async def _periodic_sync_loop(self):
+        """定期全量同步循环"""
+        while True:
+            try:
+                await asyncio.sleep(self._sync_interval)
+                await self._sync_orders_from_server()
+            except asyncio.CancelledError:
+                self.logger.info("订单同步任务已取消")
+                break
+            except Exception as e:
+                self.logger.exception("订单同步循环异常: %s", e)
+
     def get_buy_order_count(self) -> int:
         """
         获取买单数量
         Returns:
             int: 买单数量
         """
-        if self._orders:
-            return sum(1 for order in self._orders if order["side"] == "buy")
-        return 0
+        return sum(1 for order in self._orders_dict.values() if order["side"] == "buy")
 
     def get_sell_order_count(self) -> int:
         """
@@ -310,9 +362,7 @@ class StandXAdapter:
         Returns:
             int: 卖单数量
         """
-        if self._orders:
-            return sum(1 for order in self._orders if order["side"] == "sell")
-        return 0
+        return sum(1 for order in self._orders_dict.values() if order["side"] == "sell")
 
     def get_buy_orders(self) -> list:
         """
@@ -320,9 +370,7 @@ class StandXAdapter:
         Returns:
             list: 买单列表
         """
-        if self._orders:
-            return [order for order in self._orders if order["side"] == "buy"]
-        return []
+        return [order for order in self._orders_dict.values() if order["side"] == "buy"]
 
     def get_sell_orders(self) -> list:
         """
@@ -330,9 +378,7 @@ class StandXAdapter:
         Returns:
             list: 卖单列表
         """
-        if self._orders:
-            return [order for order in self._orders if order["side"] == "sell"]
-        return []
+        return [order for order in self._orders_dict.values() if order["side"] == "sell"]
 
     async def get_position(self, symbol: Optional[str] = None) -> list:
         """
@@ -473,6 +519,9 @@ class StandXAdapter:
         Returns:
             StandXOrderStream: 已连接的订单数据流对象
         """
+        # 保存auth实例用于后续查询
+        self._auth = auth
+        
         if not self._order_stream:
             self._order_stream = StandXOrderStream()
         if not self._order_stream.connected:
@@ -485,6 +534,13 @@ class StandXAdapter:
         await self._order_stream.login(
             token=os.getenv("ACCESS_TOKEN"), callback=self.on_login
         )
+        
+        # 启动初始同步
+        await self._sync_orders_from_server()
+        
+        # 启动定期同步任务
+        if not self._sync_task or self._sync_task.done():
+            self._sync_task = asyncio.create_task(self._periodic_sync_loop())
 
     async def new_order(
         self,
@@ -592,9 +648,9 @@ class StandXAdapter:
             raise RuntimeError("订单流未连接，请先调用 connect_order_stream()")
 
         orders_to_cancel = (
-            [order for order in self._orders if order["symbol"] == symbol]
+            [order for order in self._orders_dict.values() if order["symbol"] == symbol]
             if symbol
-            else self._orders.copy()
+            else list(self._orders_dict.values())
         )
 
         for order in orders_to_cancel:
@@ -609,6 +665,15 @@ class StandXAdapter:
 
     async def cleanup(self):
         """清理资源，关闭 WebSocket 连接"""
+        # 取消同步任务
+        if self._sync_task and not self._sync_task.done():
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except asyncio.CancelledError:
+                self.logger.info("订单同步任务已取消")
+        
+        # 关闭连接
         if self._market_stream and self._market_stream.connected:
             await self._market_stream.disconnect()
         if self._order_stream and self._order_stream.connected:
