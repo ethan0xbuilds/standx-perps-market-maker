@@ -104,6 +104,87 @@ class MarketMaker:
         buy_price = market_price * (1 - self.target_bps / 10000)
         sell_price = market_price * (1 + self.target_bps / 10000)
         return (buy_price, sell_price)
+    
+    def calculate_market_risk(self) -> tuple[float, str]:
+        """
+        计算市场风险等级（基于盘口压力）
+        
+        Returns:
+            (risk_score, description) 风险分数 0-100 和描述
+        """
+        depth_data = self.exchange_adapter.get_depth_book_data()
+        if not depth_data:
+            return 50.0, "数据不足"
+        
+        bids = depth_data.get("bids", [])
+        asks = depth_data.get("asks", [])
+        
+        if len(bids) < 5 or len(asks) < 5:
+            return 50.0, "深度不足"
+        
+        mid_price = self.exchange_adapter.get_depth_mid_price()
+        if not mid_price:
+            return 50.0, "价格缺失"
+        
+        # 1. 计算买卖盘口价差（相对值）
+        best_bid = float(bids[0][0])
+        best_ask = float(asks[0][0])
+        spread_bps = (best_ask - best_bid) / mid_price * 10000
+        
+        # 2. 计算前5档买卖量比
+        bid_volume = sum(float(b[1]) for b in bids[:5])
+        ask_volume = sum(float(a[1]) for a in asks[:5])
+        volume_ratio = min(bid_volume, ask_volume) / max(bid_volume, ask_volume) if max(bid_volume, ask_volume) > 0 else 0.5
+        
+        # 3. 计算价格密集度（前10档价格跨度）
+        if len(bids) >= 10 and len(asks) >= 10:
+            bid_depth = (float(bids[0][0]) - float(bids[9][0])) / mid_price * 10000
+            ask_depth = (float(asks[9][0]) - float(asks[0][0])) / mid_price * 10000
+            depth_avg = (bid_depth + ask_depth) / 2
+        else:
+            depth_avg = 50  # 默认中等
+        
+        # 综合评分（0-100，越高越危险）
+        # 价差大 -> 风险高；买卖不平衡 -> 风险高；深度浅 -> 风险高
+        risk_score = (
+            spread_bps * 2 +  # 价差权重
+            (1 - volume_ratio) * 50 +  # 不平衡度权重
+            max(0, 50 - depth_avg) * 0.5  # 深度权重
+        )
+        
+        risk_score = max(0, min(100, risk_score))
+        
+        desc = f"价差:{spread_bps:.1f}bps 量比:{volume_ratio:.2f} 深度:{depth_avg:.1f}bps"
+        return risk_score, desc
+    
+    def get_adaptive_bps(self) -> tuple[float, float, str]:
+        """
+        根据市场风险动态调整挂单偏离
+        
+        Returns:
+            (target_bps, min_bps, reason) 目标偏离、最小偏离、决策原因
+        """
+        # 计算市场风险
+        risk_score, risk_desc = self.calculate_market_risk()
+        
+        # 根据风险分数决定挂单策略
+        if risk_score < 20:
+            target_bps = 8.0
+            min_bps = 6.0
+            max_bps = 10.0
+            reason = f"低风险({risk_score:.0f})"
+        elif risk_score < 50:
+            target_bps = 25.0
+            min_bps = 20.0
+            max_bps = 30.0
+            reason = f"中风险({risk_score:.0f})"
+        else:
+            target_bps = 80.0
+            min_bps = 60.0
+            max_bps = 100.0
+            reason = f"高风险({risk_score:.0f})"
+        
+        return target_bps, min_bps, max_bps, f"{reason} - {risk_desc}"
 
     def check_order_count(self) -> tuple[bool, str]:
         """
@@ -288,9 +369,9 @@ class MarketMaker:
     async def _price_monitor_loop(self):
         """
         价格监控循环 - 仅在价格变化时触发检查
-        使用事件驱动机制，避免频繁轮询
+        使用事件驱动机制 + 自适应挂单策略
         """
-        self.logger.info("价格监控任务启动")
+        self.logger.info("价格监控任务启动（自适应挂单模式）")
         
         while not self._shutdown_requested:
             try:
@@ -302,13 +383,38 @@ class MarketMaker:
                     self.logger.debug("30秒内无价格更新，继续等待...")
                     continue
                 
-                # 检查订单状态和偏离度
-                need_replace, reason = self.check_order_count()
+                # 动态调整挂单参数（基于市场风险）
+                new_target_bps, new_min_bps, new_max_bps, reason = self.get_adaptive_bps()
+                
+                # 检测参数是否发生显著变化（超过20%）
+                params_changed = (
+                    abs(new_target_bps - self.target_bps) / self.target_bps > 0.2 if self.target_bps > 0 else False
+                )
+                
+                if params_changed:
+                    self.logger.info(
+                        "📊 挂单参数调整: %.1f→%.1f bps (范围: %.1f-%.1f), 原因: %s",
+                        self.target_bps, new_target_bps, new_min_bps, new_max_bps, reason
+                    )
+                    self.target_bps = new_target_bps
+                    self.min_bps = new_min_bps
+                    self.max_bps = new_max_bps
+                    # 参数变化时强制重挂单
+                    await self._replace_orders(f"策略调整: {reason}")
+                    continue
+                else:
+                    # 参数未变化，更新内部值（用于下次比较）
+                    self.target_bps = new_target_bps
+                    self.min_bps = new_min_bps
+                    self.max_bps = new_max_bps
+                
+                # 正常偏离检查
+                need_replace, check_reason = self.check_order_count()
                 if not need_replace:
-                    need_replace, reason = self.check_price_deviation()
+                    need_replace, check_reason = self.check_price_deviation()
                 
                 if need_replace:
-                    await self._replace_orders(reason)
+                    await self._replace_orders(check_reason)
                     
             except asyncio.TimeoutError:
                 # wait_for_new_price 超时，继续循环

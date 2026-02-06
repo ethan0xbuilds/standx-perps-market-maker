@@ -22,6 +22,7 @@ class StandXAdapter:
         self._market_stream: Optional[StandXMarketStream] = None
         self._order_stream: Optional[StandXOrderStream] = None
         self._depth_mid_price: Optional[float] = None
+        self._depth_book_data: Optional[dict] = None  # 保存完整的盘口数据
         self._last_price_update_time: Optional[float] = None
         self._price_updated_and_processed: bool = True
         self._orders: list = []
@@ -66,6 +67,13 @@ class StandXAdapter:
                 # 本地排序，bids从高到低，asks从低到高
                 bids = sorted(bids, key=lambda x: float(x[0]), reverse=True)
                 asks = sorted(asks, key=lambda x: float(x[0]))
+                
+                # 保存完整的盘口数据（用于风险计算）
+                self._depth_book_data = {
+                    "bids": bids,
+                    "asks": asks,
+                    "timestamp": time.time()
+                }
 
                 best_bid = float(bids[0][0]) if bids else None
                 best_ask = float(asks[0][0]) if asks else None
@@ -132,6 +140,14 @@ class StandXAdapter:
             Optional[float]: 当前中间价
         """
         return self._depth_mid_price
+    
+    def get_depth_book_data(self) -> Optional[dict]:
+        """
+        获取完整的盘口数据（用于风险分析）
+        Returns:
+            Optional[dict]: 包含 bids, asks, timestamp 的字典
+        """
+        return self._depth_book_data
 
     async def on_order(self, data):
         """
