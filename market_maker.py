@@ -74,6 +74,7 @@ class MarketMaker:
 
         # 优雅关闭相关
         self._shutdown_requested = False
+        self._shutdown_event = asyncio.Event()
         
         # 风险评估平滑与迟滞
         self._risk_ema = None  # 风险分数EMA（指数移动平均）
@@ -105,6 +106,7 @@ class MarketMaker:
         def handle_signal(signum, frame):
             self.logger.info("收到信号 %s，准备优雅关闭...", signum)
             self._shutdown_requested = True
+            self._shutdown_event.set()
 
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
@@ -399,9 +401,34 @@ class MarketMaker:
             price_check_task = asyncio.create_task(self._price_monitor_loop())
             position_check_task = asyncio.create_task(self._position_monitor_loop())
             balance_report_task = asyncio.create_task(self._balance_report_loop())
+            shutdown_task = asyncio.create_task(self._shutdown_event.wait())
             
-            # 等待任务完成（通常是收到关闭信号）
-            await asyncio.gather(price_check_task, position_check_task, balance_report_task)
+            # 任意任务结束或收到关闭信号时退出
+            done, _pending = await asyncio.wait(
+                [price_check_task, position_check_task, balance_report_task, shutdown_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if shutdown_task in done:
+                self.logger.info("检测到关闭信号，准备停止任务...")
+            else:
+                self.logger.warning("监控任务提前结束，触发关闭...")
+                self._shutdown_requested = True
+                self._shutdown_event.set()
+
+            for task in [price_check_task, position_check_task, balance_report_task]:
+                if not task.done():
+                    task.cancel()
+
+            await asyncio.gather(
+                price_check_task,
+                position_check_task,
+                balance_report_task,
+                return_exceptions=True,
+            )
+
+            if not shutdown_task.done():
+                shutdown_task.cancel()
 
         except KeyboardInterrupt:
             self.logger.info("收到中断信号，停止策略...")
@@ -782,7 +809,14 @@ class MarketMaker:
         
         while not self._shutdown_requested:
             try:
-                await asyncio.sleep(self._balance_report_interval)
+                try:
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(),
+                        timeout=self._balance_report_interval,
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    pass
                 
                 if self._shutdown_requested:
                     break
@@ -860,6 +894,7 @@ class MarketMaker:
     async def cleanup(self):
         """清理所有订单和资源"""
         await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
+        await self.exchange_adapter.close_position(symbol=self.symbol)
         await self.exchange_adapter.cleanup()
 
 
