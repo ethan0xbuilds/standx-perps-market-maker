@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import os
 import signal
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -82,6 +83,19 @@ class MarketMaker:
         self._risk_ema = None  # 风险分数EMA（指数移动平均）
         self._risk_ema_alpha = float(os.getenv("RISK_EMA_ALPHA", "0.3"))  # EMA平滑系数
         self._current_risk_level = "medium"  # 当前风险等级（low/medium/high）
+        
+        # 持仓管理参数（分层止盈止损）
+        self._position_quick_tp_bps = float(os.getenv("POSITION_QUICK_TP_BPS", "1.5"))  # 一级止盈点数
+        self._position_hold_seconds = float(os.getenv("POSITION_HOLD_SECONDS", "5"))  # 持仓等待时间
+        self._position_force_exit_bps = float(os.getenv("POSITION_FORCE_EXIT_BPS", "8"))  # 二级强制止盈点数
+        self._position_stop_loss_bps = float(os.getenv("POSITION_STOP_LOSS_BPS", "4"))  # 止损点数
+        self._max_position_hold_time = float(os.getenv("MAX_POSITION_HOLD_TIME", "30"))  # 最大持仓时间（秒）
+        
+        # 持仓跟踪状态
+        self._tracked_position = None  # 当前跟踪的持仓对象
+        self._tp_order_id = None  # 止盈单ID
+        self._sl_order_id = None  # 止损单ID
+        self._position_entry_time = None  # 持仓入场时间
         
         # 获取 logger 实例
         self.logger = get_logger(__name__)
@@ -401,6 +415,164 @@ class MarketMaker:
                 f"*致命异常*\n" f"账户: `{self.account_name}`\n" f"交易对: `{self.symbol}`\n" f"错误: {e}"
             )
 
+    def _create_position_obj(self, qty: float, side: str, entry_price: float) -> dict:
+        """
+        创建持仓跟踪对象
+        
+        Args:
+            qty: 持仓数量
+            side: 持仓方向 (buy/sell)
+            entry_price: 入场价格
+            
+        Returns:
+            持仓对象字典
+        """
+        return {
+            "qty": qty,
+            "side": side,
+            "entry_price": entry_price,
+            "entry_time": time.time(),
+            "tp_placed": False,  # 止盈单是否已挂
+            "sl_placed": False,  # 止损单是否已挂
+            "stage": "entry",    # 持仓阶段: entry->hold->tp_timeout->force_exit
+        }
+
+    async def _place_tp_order(self, position: dict) -> bool:
+        """
+        挂一级止盈单（小利润快速退出）
+        
+        Args:
+            position: 持仓对象
+            
+        Returns:
+            是否成功
+        """
+        if position["tp_placed"]:
+            return True
+        
+        try:
+            qty = str(abs(position["qty"]))
+            # 根据持仓方向确定止盈方向（对方向）
+            tp_side = "sell" if position["side"] == "buy" else "buy"
+            # 计算止盈价格
+            tp_price = position["entry_price"] * (
+                1 + self._position_quick_tp_bps / 10000
+                if position["side"] == "buy"
+                else 1 - self._position_quick_tp_bps / 10000
+            )
+            
+            await self.exchange_adapter.new_order(
+                symbol=self.symbol,
+                side=tp_side,
+                order_type="limit",
+                qty=qty,
+                price=f"{tp_price:.2f}",
+                time_in_force="gtc",
+                reduce_only=True,
+                margin_mode=self.margin_mode,
+                leverage=self.leverage,
+            )
+            
+            position["tp_placed"] = True
+            self.logger.info(
+                "✅ 一级止盈单已挂: 数量=%s, 价格=%.2f (利润: %.1f bps)",
+                qty, tp_price, self._position_quick_tp_bps
+            )
+            return True
+        except Exception as e:
+            self.logger.exception("止盈单挂单失败: %s", e)
+            return False
+
+    async def _place_sl_order(self, position: dict) -> bool:
+        """
+        挂止损单（防止亏损扩大）
+        
+        Args:
+            position: 持仓对象
+            
+        Returns:
+            是否成功
+        """
+        if position["sl_placed"]:
+            return True
+        
+        try:
+            qty = str(abs(position["qty"]))
+            # 根据持仓方向确定止损方向（对方向）
+            sl_side = "sell" if position["side"] == "buy" else "buy"
+            # 计算止损价格
+            sl_price = position["entry_price"] * (
+                1 - self._position_stop_loss_bps / 10000
+                if position["side"] == "buy"
+                else 1 + self._position_stop_loss_bps / 10000
+            )
+            
+            await self.exchange_adapter.new_order(
+                symbol=self.symbol,
+                side=sl_side,
+                order_type="limit",
+                qty=qty,
+                price=f"{sl_price:.2f}",
+                time_in_force="gtc",
+                reduce_only=True,
+                margin_mode=self.margin_mode,
+                leverage=self.leverage,
+            )
+            
+            position["sl_placed"] = True
+            self.logger.info(
+                "🛡️ 止损单已挂: 数量=%s, 价格=%.2f (止损: %.1f bps)",
+                qty, sl_price, self._position_stop_loss_bps
+            )
+            return True
+        except Exception as e:
+            self.logger.exception("止损单挂单失败: %s", e)
+            return False
+
+    async def _cancel_tp_sl_orders(self, position: dict):
+        """
+        取消止盈/止损单
+        
+        Args:
+            position: 持仓对象
+        """
+        try:
+            await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
+            position["tp_placed"] = False
+            position["sl_placed"] = False
+            self.logger.info("止盈/止损单已取消")
+        except Exception as e:
+            self.logger.exception("取消止盈/止损单失败: %s", e)
+
+    async def _market_close_position(self, position: dict) -> bool:
+        """
+        市价平仓
+        
+        Args:
+            position: 持仓对象
+            
+        Returns:
+            是否成功
+        """
+        try:
+            qty = str(abs(position["qty"]))
+            close_side = "sell" if position["side"] == "buy" else "buy"
+            
+            await self.exchange_adapter.new_order(
+                symbol=self.symbol,
+                side=close_side,
+                order_type="market",
+                qty=qty,
+                time_in_force="ioc",
+                reduce_only=True,
+            )
+            
+            self.logger.info("🔴 市价平仓已执行: 数量=%s", qty)
+            return True
+        except Exception as e:
+            self.logger.exception("市价平仓失败: %s", e)
+            return False
+
     async def _price_monitor_loop(self):
         """
         价格监控循环 - 仅在价格变化时触发检查
@@ -462,15 +634,139 @@ class MarketMaker:
 
     async def _position_monitor_loop(self):
         """
-        持仓监控循环 - 定期检查并平仓（低频）
-        持仓检查频率较低，1秒一次即可
+        持仓监控循环 - 分层止盈止损机制
+        
+        策略流程：
+        1. 检测新持仓 -> 挂一级止盈单 + 止损单
+        2. 等待持仓hold_seconds秒 -> 持续监控
+        3. 如果止盈单未成交但已等待hold_seconds秒 -> 改为二级市价止盈
+        4. 最长持仓时间超过max_hold_time秒 -> 强制市价平仓
+        5. 有订单成交 -> 自动清理持仓状态
         """
-        self.logger.info("持仓监控任务启动")
+        self.logger.info("持仓监控任务启动（分层止盈止损模式）")
         
         while not self._shutdown_requested:
             try:
-                await self.exchange_adapter.close_position(symbol=self.symbol)
-                await asyncio.sleep(1.0)  # 持仓检查频率：1秒/次
+                # 1. 检查是否有新持仓（来自 exchange_adapter）
+                current_position = await self.exchange_adapter.get_position(symbol=self.symbol)
+                current_qty = float(current_position.get("qty", 0)) if current_position else 0
+                
+                # 2. 如果当前没有跟踪的持仓
+                if self._tracked_position is None:
+                    # 2.1 有新的实际持仓
+                    if current_qty != 0:
+                        side = "buy" if current_qty > 0 else "sell"
+                        entry_price = float(current_position.get("entry_price", 0))
+                        
+                        self._tracked_position = self._create_position_obj(
+                            qty=current_qty,
+                            side=side,
+                            entry_price=entry_price
+                        )
+                        
+                        self.logger.info(
+                            "🔴 检测到新持仓: 方向=%s, 数量=%.4f, 入场价=%.2f",
+                            side, abs(current_qty), entry_price
+                        )
+                        
+                        # 2.2 挂止盈 + 止损单
+                        await self._place_tp_order(self._tracked_position)
+                        await self._place_sl_order(self._tracked_position)
+                        
+                        # 2.3 发送通知
+                        if self.notifier:
+                            await self.notifier.send(
+                                f"⚠️ *新增持仓（分层止盈止损）*\n"
+                                f"账户: `{self.account_name}`\n"
+                                f"交易对: `{self.symbol}`\n"
+                                f"方向: {side}\n"
+                                f"数量: {abs(current_qty):.4f}\n"
+                                f"入场价: {entry_price:.2f}\n"
+                                f"一级止盈: {self._position_quick_tp_bps:.1f}bps @ {entry_price * (1 + self._position_quick_tp_bps / 10000 if side == 'buy' else 1 - self._position_quick_tp_bps / 10000):.2f}\n"
+                                f"止损: {self._position_stop_loss_bps:.1f}bps"
+                            )
+                    
+                    # 2.4 正常循环间隔
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                # 3. 有跟踪的持仓，检查状态变化
+                if current_qty == 0:
+                    # 3.1 持仓已清（被止盈或止损成交）
+                    self.logger.info("✅ 持仓已清（成交或平仓完成）")
+                    
+                    if self.notifier:
+                        await self.notifier.send(
+                            f"✅ *持仓已清*\n"
+                            f"账户: `{self.account_name}`\n"
+                            f"交易对: `{self.symbol}`\n"
+                            f"原始方向: {self._tracked_position['side']}\n"
+                            f"原始数量: {abs(self._tracked_position['qty']):.4f}\n"
+                            f"入场价: {self._tracked_position['entry_price']:.2f}"
+                        )
+                    
+                    self._tracked_position = None
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                # 4. 持仓状态管理（分阶段处理）
+                elapsed = time.time() - self._tracked_position["entry_time"]
+                
+                # 4.1 持仓超时保护（超过最大持仓时间 -> 强制市价平仓）
+                if elapsed > self._max_position_hold_time:
+                    self.logger.warning(
+                        "⏰ 持仓已超过最大时间 %.1f 秒，执行强制市价平仓",
+                        self._max_position_hold_time
+                    )
+                    
+                    await self._cancel_tp_sl_orders(self._tracked_position)
+                    await self._market_close_position(self._tracked_position)
+                    
+                    if self.notifier:
+                        await self.notifier.send(
+                            f"🔴 *持仓超时强制平仓*\n"
+                            f"账户: `{self.account_name}`\n"
+                            f"交易对: `{self.symbol}`\n"
+                            f"持仓时间: {elapsed:.1f}秒"
+                        )
+                    
+                    self._tracked_position = None
+                    await asyncio.sleep(0.5)
+                    continue
+                
+                # 4.2 进行中阶段：等待hold_seconds秒 -> 尝试二级止盈
+                if self._tracked_position["stage"] == "entry":
+                    if elapsed > self._position_hold_seconds:
+                        # 从entry阶段进入hold阶段
+                        self._tracked_position["stage"] = "hold"
+                        self.logger.info(
+                            "⏱️ 持仓已等待 %.1f 秒，从entry阶段进入hold阶段",
+                            elapsed
+                        )
+                        
+                        # 取消止盈/止损单，改为市价平仓（二级强制止盈）
+                        await self._cancel_tp_sl_orders(self._tracked_position)
+                        
+                        # 尝试市价平仓
+                        success = await self._market_close_position(self._tracked_position)
+                        
+                        if success:
+                            self.logger.info("二级市价止盈已执行")
+                            if self.notifier:
+                                await self.notifier.send(
+                                    f"💰 *二级市价止盈已执行*\n"
+                                    f"账户: `{self.account_name}`\n"
+                                    f"交易对: `{self.symbol}`\n"
+                                    f"持仓时间: {elapsed:.1f}秒\n"
+                                    f"目标止盈点数: {self._position_force_exit_bps:.1f}bps"
+                                )
+                            self._tracked_position = None
+                        else:
+                            # 市价平仓失败，继续等待或回到hold继续监控
+                            self.logger.warning("二级市价止盈失败，继续等待")
+                
+                await asyncio.sleep(0.5)
+                
             except Exception as e:
                 self.logger.exception("持仓监控循环异常: %s", e)
                 await asyncio.sleep(1.0)  # 出错后等待1秒再继续
