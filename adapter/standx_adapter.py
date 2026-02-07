@@ -297,13 +297,34 @@ class StandXAdapter:
         await self._market_stream.subscribe("order", callback=self.on_order)
         await self._market_stream.subscribe("position", callback=self.on_position)
 
+    async def _initial_sync_with_timeout(self):
+        """初始同步订单（带超时保护，防止阻塞价格获取）"""
+        try:
+            # 最多等待3秒完成初始同步，超时继续运行，由定期同步补偿
+            await asyncio.wait_for(
+                self._sync_orders_from_server(),
+                timeout=3.0
+            )
+        except asyncio.TimeoutError:
+            self.logger.warning("初始订单同步超时（3秒），继续运行，将由定期同步补偿")
+        except Exception as e:
+            self.logger.exception("初始订单同步失败: %s", e)
+
     async def _sync_orders_from_server(self):
-        """从服务器全量同步订单状态（使用HTTP API）"""
+        """从服务器全量同步订单状态（使用HTTP API，带超时）"""
         try:
             from standx_api import query_open_orders
             
             self.logger.info("开始全量同步订单状态...")
-            result = await query_open_orders(self._auth, symbol=None, limit=100)
+            # 查询API最多3秒超时，防止阻塞
+            try:
+                result = await asyncio.wait_for(
+                    query_open_orders(self._auth, symbol=None, limit=100),
+                    timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                self.logger.warning("查询开仓订单API超时（3秒），本次同步跳过")
+                return
             
             server_orders = result.get("result", [])
             server_order_ids = {order["id"] for order in server_orders}
@@ -346,11 +367,18 @@ class StandXAdapter:
             self.logger.exception("订单同步失败: %s", e)
 
     async def _periodic_sync_loop(self):
-        """定期全量同步循环"""
+        """定期全量同步循环（带超时控制）"""
         while True:
             try:
                 await asyncio.sleep(self._sync_interval)
-                await self._sync_orders_from_server()
+                # 同步操作最多5秒，超时则跳过此次同步，下次继续尝试
+                try:
+                    await asyncio.wait_for(
+                        self._sync_orders_from_server(),
+                        timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.warning("定期订单同步超时（5秒），下次继续尝试")
             except asyncio.CancelledError:
                 self.logger.info("订单同步任务已取消")
                 break
@@ -637,8 +665,8 @@ class StandXAdapter:
             token=os.getenv("ACCESS_TOKEN"), callback=self.on_login
         )
         
-        # 启动初始同步
-        await self._sync_orders_from_server()
+        # ✨ 改进：初始同步改为后台任务（带超时保护），不阻塞主流程，避免延迟价格获取
+        asyncio.create_task(self._initial_sync_with_timeout())
         
         # 启动定期同步任务
         if not self._sync_task or self._sync_task.done():
