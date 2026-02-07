@@ -78,6 +78,11 @@ class MarketMaker:
         # 优雅关闭相关
         self._shutdown_requested = False
         
+        # 风险评估平滑与迟滞
+        self._risk_ema = None  # 风险分数EMA（指数移动平均）
+        self._risk_ema_alpha = float(os.getenv("RISK_EMA_ALPHA", "0.3"))  # EMA平滑系数
+        self._current_risk_level = "medium"  # 当前风险等级（low/medium/high）
+        
         # 获取 logger 实例
         self.logger = get_logger(__name__)
 
@@ -148,37 +153,67 @@ class MarketMaker:
         # 价差大 -> 风险高；买卖不平衡 -> 风险高；深度越大（盘口越稀） -> 风险高
         risk_score = (
             spread_bps * 2 +  # 价差权重
-            (1 - volume_ratio) * 50 +  # 不平衡度权重
+            (1 - volume_ratio) * 25 +  # 不平衡度权重
             min(depth_avg, 50) * 0.5  # 深度权重
         )
         
         risk_score = max(0, min(100, risk_score))
         
+        # EMA平滑风险分数，减少短期波动
+        if self._risk_ema is None:
+            self._risk_ema = risk_score
+        else:
+            self._risk_ema = self._risk_ema_alpha * risk_score + (1 - self._risk_ema_alpha) * self._risk_ema
+        
+        smoothed_score = self._risk_ema
+        
         desc = f"价差:{spread_bps:.1f}bps 量比:{volume_ratio:.2f} 深度:{depth_avg:.1f}bps"
-        return risk_score, desc
+        return smoothed_score, desc
     
     def get_adaptive_bps(self) -> tuple[float, float, str]:
         """
-        根据市场风险动态调整挂单偏离
+        根据市场风险动态调整挂单偏离（带迟滞阈值）
         
         Returns:
             (target_bps, min_bps, reason) 目标偏离、最小偏离、决策原因
         """
-        # 计算市场风险
+        # 计算市场风险（已EMA平滑）
         risk_score, risk_desc = self.calculate_market_risk()
         
-        # 根据风险分数决定挂单策略
-        if risk_score < 20:
+        # 使用迟滞阈值防止频繁切换
+        # 当前状态决定切换阈值（上升阈值 > 下降阈值）
+        new_level = self._current_risk_level
+        
+        if self._current_risk_level == "low":
+            # 低风险状态：需要 ≥25 才升到中风险
+            if risk_score >= 25:
+                new_level = "medium"
+        elif self._current_risk_level == "medium":
+            # 中风险状态：<15 降到低风险，≥55 升到高风险
+            if risk_score < 15:
+                new_level = "low"
+            elif risk_score >= 55:
+                new_level = "high"
+        else:  # high
+            # 高风险状态：需要 <45 才降到中风险
+            if risk_score < 45:
+                new_level = "medium"
+        
+        # 更新当前等级
+        self._current_risk_level = new_level
+        
+        # 根据风险等级决定挂单策略
+        if new_level == "low":
             target_bps = 8.0
             min_bps = 6.0
             max_bps = 10.0
             reason = f"低风险({risk_score:.0f})"
-        elif risk_score < 50:
+        elif new_level == "medium":
             target_bps = 25.0
             min_bps = 20.0
             max_bps = 30.0
             reason = f"中风险({risk_score:.0f})"
-        else:
+        else:  # high
             target_bps = 80.0
             min_bps = 60.0
             max_bps = 100.0
