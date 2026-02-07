@@ -27,7 +27,7 @@
 - pip / venv
 - Git
 
-## 安装与运行
+## 快速开始
 
 ### 1. 安装依赖
 
@@ -46,52 +46,91 @@ cd /root/standx
 # 设置脚本权限
 chmod +x run.sh stop.sh
 
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env，填入私钥和参数
-
 # 安装 Python 依赖
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. 部署为 systemd 服务
+## 部署指南
 
-将仓库内的服务文件拷贝到 systemd 目录：
+本项目支持**多账户模式**，可在同一服务器运行多个账户的做市策略。
+
+### 配置文件准备
+
+为每个账户创建独立的配置文件：
 
 ```bash
-sudo cp standx.service /etc/systemd/system/standx.service
+cd /root/standx
+
+# 复制示例配置文件
+cp .env.account1.example .env.account1
+cp .env.account2.example .env.account2
+
+# 编辑配置文件，填入各账户的私钥和参数
+vim .env.account1
+vim .env.account2
+```
+
+**关键要求**：每个账户的配置文件必须包含：
+- 独立的私钥（`WALLET_PRIVATE_KEY` 或 `ED25519_PRIVATE_KEY` + `ACCESS_TOKEN`）
+- 交易对、订单数量、目标偏离等参数
+- 可选：独立的 Telegram 通知配置
+
+### systemd 服务部署
+
+```bash
+# 复制服务文件到 systemd 目录
+sudo cp standx-account1.service /etc/systemd/system/
+sudo cp standx-account2.service /etc/systemd/system/
+
+# 重载 systemd 配置
 sudo systemctl daemon-reload
-sudo systemctl enable standx
+
+# 启用开机自启
+sudo systemctl enable standx-account1
+sudo systemctl enable standx-account2
+
+# 启动服务
+sudo systemctl start standx-account1
+sudo systemctl start standx-account2
 ```
 
-### 4. 启动并管理服务
+### 查看日志
 
 ```bash
-# 启动服务
-sudo systemctl start standx
+# 文件日志（推荐）
+tail -f /root/standx/logs/account1_market_maker.log
+tail -f /root/standx/logs/account2_market_maker.log
 
-# 查看状态
-sudo systemctl status standx
-
-# 查看日志
-tail -f /root/standx/logs/market_maker.log
-
-# 停止/重启服务
-sudo systemctl stop standx-market-maker
-sudo systemctl restart standx-market-maker
+# systemd 日志
+sudo journalctl -u standx-account1 -f
+sudo journalctl -u standx-account2 -f
 ```
 
-## 多账户部署
+### 管理服务
 
-如需在同一服务器运行多个账户的做市策略，请参阅 **[多账户部署指南](MULTI_ACCOUNT_GUIDE.md)**。
+```bash
+# 查看状态
+sudo systemctl status standx-account1 standx-account2
 
-支持功能：
-- 共享代码，独立配置
-- 独立日志文件（带账户前缀）
-- 独立 systemd 服务管理
-- 资源限制隔离
+# 启动/停止单个账户
+sudo systemctl start standx-account1
+sudo systemctl stop standx-account1
+
+# 重启所有账户
+sudo systemctl restart standx-account1 standx-account2
+
+# 批量查看所有账户
+sudo systemctl status 'standx-account*'
+```
+
+### 添加新账户
+
+1. 创建配置文件：`cp .env.account1.example .env.account3` 并编辑
+2. 创建服务文件：`cp standx-account1.service standx-account3.service` 并修改配置项
+3. 部署：`sudo cp standx-account3.service /etc/systemd/system/ && sudo systemctl daemon-reload`
+4. 启动：`sudo systemctl start standx-account3`
 
 ## 环境变量 (.env)
 
