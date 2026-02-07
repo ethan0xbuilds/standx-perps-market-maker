@@ -95,7 +95,7 @@ class MarketMaker:
         self._position_entry_time = None  # 持仓入场时间
         
         # 余额汇报参数
-        self._balance_report_interval = float(os.getenv("BALANCE_REPORT_INTERVAL", "30"))  # 默认每半小时汇报一次（秒）
+        self._balance_report_interval = float(os.getenv("BALANCE_REPORT_INTERVAL", "1800"))  # 默认每半小时汇报一次（秒）
         
         # 获取 logger 实例
         self.logger = get_logger(__name__)
