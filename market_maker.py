@@ -145,11 +145,11 @@ class MarketMaker:
             depth_avg = 50  # 默认中等
         
         # 综合评分（0-100，越高越危险）
-        # 价差大 -> 风险高；买卖不平衡 -> 风险高；深度浅 -> 风险高
+        # 价差大 -> 风险高；买卖不平衡 -> 风险高；深度越大（盘口越稀） -> 风险高
         risk_score = (
             spread_bps * 2 +  # 价差权重
             (1 - volume_ratio) * 50 +  # 不平衡度权重
-            max(0, 50 - depth_avg) * 0.5  # 深度权重
+            min(depth_avg, 50) * 0.5  # 深度权重
         )
         
         risk_score = max(0, min(100, risk_score))
