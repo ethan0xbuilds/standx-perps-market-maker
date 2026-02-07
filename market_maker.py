@@ -63,10 +63,6 @@ class MarketMaker:
 
         # 通知器
         self.notifier = notifier or Notifier.from_env()
-        # 订单重挂通知限流（秒），可通过环境变量调整，默认 3600 秒（1 小时）
-        self.reorder_throttle_seconds = int(
-            os.getenv("REORDER_NOTIFY_THROTTLE_SECONDS", "3600")
-        )
 
         # 挂单参数（静态）
         self.target_bps = target_bps
@@ -817,11 +813,8 @@ async def main():
                         help='日志文件前缀 (默认: 空)')
     args = parser.parse_args()
     
-    # 配置日志（如果指定了前缀则使用前缀）
-    if args.log_prefix:
-        configure_logging(log_prefix=args.log_prefix)
-    else:
-        configure_logging()  # 使用默认配置
+    # 配置日志（多账户模式下必须指定前缀）
+    configure_logging(log_prefix=args.log_prefix)
     
     # 获取 logger 实例
     logger = get_logger(__name__)

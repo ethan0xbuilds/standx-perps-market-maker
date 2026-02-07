@@ -41,7 +41,8 @@ def configure_logging(
         # 如果指定了前缀，修改日志文件名
         default_log = f"logs/{log_prefix}_market_maker.log"
     else:
-        default_log = "logs/market_maker.log"
+        # 多账户模式：必须指定 log_prefix
+        default_log = None
     
     env_file = log_file or os.getenv("LOG_FILE", default_log)
     
@@ -76,16 +77,17 @@ def configure_logging(
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
-    # File handler (rotating) - always add for multi-account support
-    try:
-        os.makedirs(os.path.dirname(env_file), exist_ok=True)
-        fh = logging.handlers.RotatingFileHandler(env_file, maxBytes=max_bytes, backupCount=backup_count)
-        fh.setLevel(numeric_level)
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
-    except Exception:
-        # If file handler cannot be created, continue with console only
-        logger.warning("Could not create log file '%s', continuing with console logging", env_file)
+    # File handler (rotating) - only add if env_file is specified
+    if env_file:
+        try:
+            os.makedirs(os.path.dirname(env_file), exist_ok=True)
+            fh = logging.handlers.RotatingFileHandler(env_file, maxBytes=max_bytes, backupCount=backup_count)
+            fh.setLevel(numeric_level)
+            fh.setFormatter(formatter)
+            logger.addHandler(fh)
+        except Exception:
+            # If file handler cannot be created, continue with console only
+            logger.warning("Could not create log file '%s', continuing with console logging", env_file)
 
 
 def get_logger(name: str):

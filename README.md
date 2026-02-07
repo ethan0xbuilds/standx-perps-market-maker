@@ -43,9 +43,6 @@ sudo apt-get update && sudo apt-get install -y python3-venv
 git clone https://github.com/ethan0xbuilds/standx-perps-market-maker.git /root/standx
 cd /root/standx
 
-# 设置脚本权限
-chmod +x run.sh stop.sh
-
 # 安装 Python 依赖
 python3 -m venv .venv
 source .venv/bin/activate

@@ -33,16 +33,6 @@ python market_maker.py
 
 # Stop gracefully (sends SIGTERM → cleanup orders)
 sudo systemctl stop standx-market-maker
-# or ./stop.sh
-```
-
-### Testing
-```bash
-# Test Telegram notifications
-python tests/test_notification.py
-
-# Test WebSocket trading (live orders!)
-python tests/test_ws_trading.py
 ```
 
 ### Authentication Schemes
@@ -118,4 +108,3 @@ WS order API also uses `_body_signature_headers()` and maps values to `x-request
 
 - Systemd service file: `standx-market-maker.service` with resource limits (CPUQuota=35%, MemoryMax=800M, TasksMax=50).
 - Logs: Both systemd journal (`journalctl -u standx-market-maker -f`) and file rotation (`logs/market_maker.log*`).
-- Start/stop scripts: `run.sh` (checks .venv + .env, installs deps, launches) and `stop.sh` (finds PID, sends SIGTERM).
