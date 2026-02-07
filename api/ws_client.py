@@ -51,18 +51,22 @@ class StandXMarketStream:
     async def _receive_messages(self):
         """接收消息"""
         try:
+            self.logger.info("WebSocket消息接收循环已启动")
             async for message in self.ws:
                 try:
                     data = json.loads(message)
                     # 异步处理消息，避免阻塞接收循环
                     asyncio.create_task(self._handle_message(data))
                 except Exception as e:
-                    print(f"处理消息错误: {e}")
-        except ConnectionClosed:
+                    self.logger.exception(f"处理消息错误: {e}")
+        except ConnectionClosed as e:
+            self.logger.error(f"WebSocket连接已关闭: {e}, 运行时长: {time.time() - self._connect_time:.1f}秒")
             self.connected = False
         except Exception as e:
-            print(f"接收消息错误: {e}")
+            self.logger.exception(f"接收消息严重错误: {e}")
             self.connected = False
+        finally:
+            self.logger.warning("WebSocket消息接收循环已退出")
 
     async def _handle_message(self, data: Dict[str, Any]):
         """处理接收到的消息"""
@@ -160,6 +164,7 @@ class StandXOrderStream:
     async def _receive_messages(self):
         """接收消息"""
         try:
+            self.logger.info("WebSocket订单流接收循环已启动")
             async for message in self.ws:
                 try:
                     data = json.loads(message)
@@ -167,11 +172,14 @@ class StandXOrderStream:
                     asyncio.create_task(self._handle_message(data))
                 except Exception as e:
                     self.logger.exception(f"处理消息错误: {e}")
-        except ConnectionClosed:
+        except ConnectionClosed as e:
+            self.logger.error(f"WebSocket订单流已关闭: {e}, 运行时长: {time.time() - self._connect_time:.1f}秒")
             self.connected = False
         except Exception as e:
-            self.logger.exception(f"接收消息错误: {e}")
+            self.logger.exception(f"接收消息严重错误: {e}")
             self.connected = False
+        finally:
+            self.logger.warning("WebSocket订单流接收循环已退出")
 
     async def _handle_message(self, data: Dict[str, Any]):
         """处理接收到的消息"""

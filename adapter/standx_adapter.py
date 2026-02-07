@@ -35,6 +35,9 @@ class StandXAdapter:
         self._sync_interval: float = 30.0  # 订单同步间隔，默认30秒
         self._sync_task: Optional[asyncio.Task] = None  # 同步任务
         self._auth: Optional[StandXAuth] = None  # 保存auth实例用于查询
+        self._last_message_time: float = 0  # 最后收到消息的时间
+        self._health_check_task: Optional[asyncio.Task] = None  # 健康检查任务
+        self._reconnecting: bool = False  # 重连标志
         self.logger = get_logger(__name__)
         self.notifier = None
         self.account_name = None
@@ -63,6 +66,7 @@ class StandXAdapter:
 
     async def on_depth_book(self, data):
         try:
+            self._last_message_time = time.time()  # 更新心跳时间
             if data.get("channel") == "depth_book" and data.get("symbol") == "BTC-USD":
                 depth_book_data = data.get("data", {})
                 bids = depth_book_data.get("bids") or []
@@ -136,6 +140,11 @@ class StandXAdapter:
         await self.subscribe_market(
             channel="depth_book", symbol=symbol, callback=self.on_depth_book
         )
+        
+        # 启动健康检查任务
+        if not self._health_check_task or self._health_check_task.done():
+            self._health_check_task = asyncio.create_task(self._health_check_loop())
+            self.logger.info("健康检查任务已启动")
 
     def get_depth_mid_price(self) -> Optional[float]:
         """
@@ -347,6 +356,99 @@ class StandXAdapter:
                 break
             except Exception as e:
                 self.logger.exception("订单同步循环异常: %s", e)
+
+    async def _health_check_loop(self):
+        """健康检查循环 - 监控WebSocket连接"""
+        check_interval = 30.0  # 每30秒检查一次
+        timeout_threshold = 120.0  # 2分钟无消息视为超时
+        
+        self.logger.info("健康检查循环已启动，检查间隔: %.0f秒，超时阈值: %.0f秒", check_interval, timeout_threshold)
+        
+        while True:
+            try:
+                await asyncio.sleep(check_interval)
+                
+                # 检查market stream连接状态
+                if self._market_stream:
+                    if not self._market_stream.connected:
+                        self.logger.error("检测到market stream断开，准备重连...")
+                        await self._reconnect_market_stream()
+                    elif self._last_message_time > 0:
+                        time_since_last = time.time() - self._last_message_time
+                        if time_since_last > timeout_threshold:
+                            self.logger.error(
+                                f"超过{timeout_threshold}秒未收到消息（上次: {time_since_last:.1f}秒前），准备重连..."
+                            )
+                            await self._reconnect_market_stream()
+                        else:
+                            self.logger.debug("健康检查通过，距上次消息: %.1f秒", time_since_last)
+                
+            except asyncio.CancelledError:
+                self.logger.info("健康检查任务已取消")
+                break
+            except Exception as e:
+                self.logger.exception("健康检查循环异常: %s", e)
+
+    async def _reconnect_market_stream(self):
+        """重连market stream"""
+        if self._reconnecting:
+            self.logger.info("重连已在进行中，跳过")
+            return
+        
+        self._reconnecting = True
+        try:
+            self.logger.info("开始重连market stream...")
+            
+            # 关闭旧连接
+            if self._market_stream:
+                try:
+                    await self._market_stream.disconnect()
+                except Exception as e:
+                    self.logger.warning(f"关闭旧连接失败: {e}")
+            
+            # 重新创建并连接
+            self._market_stream = StandXMarketStream()
+            await self._market_stream.connect()
+            
+            # 重新订阅depth_book
+            await self._market_stream.subscribe(
+                channel="depth_book", 
+                symbol="BTC-USD", 
+                callback=self.on_depth_book
+            )
+            self.logger.info("已重新订阅depth_book")
+            
+            # 如果需要认证，重新认证（订单和持仓频道）
+            if os.getenv("ACCESS_TOKEN"):
+                await self._market_stream.authenticate(
+                    os.getenv("ACCESS_TOKEN"),
+                    [{"channel": "order"}, {"channel": "position"}]
+                )
+                await self._market_stream.subscribe("order", callback=self.on_order)
+                await self._market_stream.subscribe("position", callback=self.on_position)
+                self.logger.info("已重新认证并订阅order/position")
+            
+            self._last_message_time = time.time()
+            self.logger.info("Market stream重连成功")
+            
+            # 发送通知
+            if self.notifier:
+                await self.notifier.send(
+                    f"✅ *WebSocket重连成功*\n"
+                    f"账户: `{self.account_name}`\n"
+                    f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            
+        except Exception as e:
+            self.logger.exception(f"重连失败: {e}")
+            if self.notifier:
+                await self.notifier.send(
+                    f"⚠️ *WebSocket重连失败*\n"
+                    f"账户: `{self.account_name}`\n"
+                    f"错误: {e}"
+                )
+        finally:
+            self._reconnecting = False
 
     def get_buy_order_count(self) -> int:
         """
@@ -665,6 +767,14 @@ class StandXAdapter:
 
     async def cleanup(self):
         """清理资源，关闭 WebSocket 连接"""
+        # 取消健康检查任务
+        if self._health_check_task and not self._health_check_task.done():
+            self._health_check_task.cancel()
+            try:
+                await self._health_check_task
+            except asyncio.CancelledError:
+                self.logger.info("健康检查任务已取消")
+        
         # 取消同步任务
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
