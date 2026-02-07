@@ -93,6 +93,9 @@ class MarketMaker:
         self._sl_order_id = None  # 止损单ID
         self._position_entry_time = None  # 持仓入场时间
         
+        # 余额汇报参数
+        self._balance_report_interval = float(os.getenv("BALANCE_REPORT_INTERVAL", "30"))  # 默认每半小时汇报一次（秒）
+        
         # 获取 logger 实例
         self.logger = get_logger(__name__)
 
@@ -395,9 +398,10 @@ class MarketMaker:
         try:
             price_check_task = asyncio.create_task(self._price_monitor_loop())
             position_check_task = asyncio.create_task(self._position_monitor_loop())
+            balance_report_task = asyncio.create_task(self._balance_report_loop())
             
             # 等待任务完成（通常是收到关闭信号）
-            await asyncio.gather(price_check_task, position_check_task)
+            await asyncio.gather(price_check_task, position_check_task, balance_report_task)
 
         except KeyboardInterrupt:
             self.logger.info("收到中断信号，停止策略...")
@@ -768,6 +772,63 @@ class MarketMaker:
                 await asyncio.sleep(1.0)  # 出错后等待1秒再继续
         
         self.logger.info("持仓监控任务结束")
+
+    async def _balance_report_loop(self):
+        """
+        定期汇报账户余额（后台任务）
+        防止程序挂了或出现异常时无法感知
+        """
+        self.logger.info("余额汇报任务启动，间隔: %.0f秒", self._balance_report_interval)
+        
+        while not self._shutdown_requested:
+            try:
+                await asyncio.sleep(self._balance_report_interval)
+                
+                if self._shutdown_requested:
+                    break
+                
+                # 查询余额
+                balance = await api.query_balance(self.auth)
+                
+                # 格式化余额信息
+                total_balance = float(balance.get("balance", "0"))
+                equity = float(balance.get("equity", "0"))
+                upnl = float(balance.get("upnl", "0"))
+                cross_available = float(balance.get("cross_available", "0"))
+                isolated_balance = float(balance.get("isolated_balance", "0"))
+                locked = float(balance.get("locked", "0"))
+                
+                # 发送Telegram汇报
+                beijing_tz = ZoneInfo("Asia/Shanghai")
+                beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
+                
+                message = (
+                    f"💰 *账户余额汇报*\n"
+                    f"账户: `{self.account_name}`\n"
+                    f"时间: {beijing_time}\n"
+                    f"交易对: `{self.symbol}`\n"
+                    f"\n"
+                    f"*余额概览*\n"
+                    f"总余额: ${total_balance:.2f}\n"
+                    f"权益: ${equity:.2f}\n"
+                    f"未实现收益: ${upnl:.2f}\n"
+                    f"\n"
+                    f"*仓位详情*\n"
+                    f"单仓余额: ${isolated_balance:.2f}\n"
+                    f"可用: ${cross_available:.2f}\n"
+                    f"锁定: ${locked:.2f}"
+                )
+                
+                await self.notifier.send(message)
+                self.logger.info("✅ 余额汇报已发送: 总余额=%.2f, 权益=%.2f", total_balance, equity)
+                
+            except asyncio.CancelledError:
+                self.logger.info("余额汇报任务已取消")
+                break
+            except Exception as e:
+                self.logger.exception("余额查询或汇报失败: %s", e)
+                # 失败后继续运行，下次汇报继续尝试
+                await asyncio.sleep(60)  # 失败后等待60秒再尝试
 
     async def _replace_orders(self, reason: str):
         """
