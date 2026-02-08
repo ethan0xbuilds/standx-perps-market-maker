@@ -160,6 +160,21 @@ class MarketMaker:
         Returns:
             (risk_score, description) 风险分数 0-100 和描述
         """
+        # 资产类别风险系数配置（考虑不同市场的波动特性）
+        asset_risk_multipliers = {
+            "XAU": 0.5,  # 黄金：低波动贵金属
+            "XAG": 0.4,  # 白银：低波动贵金属
+            "BTC": 1.0,  # 比特币：高波动加密货币
+            "ETH": 1.0,  # 以太坊：高波动加密货币
+        }
+        
+        # 根据交易对识别资产类别
+        asset_multiplier = 1.0  # 默认系数
+        for asset_code, multiplier in asset_risk_multipliers.items():
+            if asset_code in self.symbol:
+                asset_multiplier = multiplier
+                break
+        
         depth_data = self.exchange_adapter.get_depth_book_data()
         if not depth_data:
             return 50.0, "数据不足"
@@ -184,37 +199,48 @@ class MarketMaker:
         ask_volume = sum(float(a[1]) for a in asks[:5])
         volume_ratio = min(bid_volume, ask_volume) / max(bid_volume, ask_volume) if max(bid_volume, ask_volume) > 0 else 0.5
         
-        # 3. 改进：计算盘口深度作为"稀疏度"指标（相对指标）
-        # 用最优10档价格跨度与最优价差的比例来衡量盘口密集度
-        # 避免低价资产（XAG）的绝对价格差被放大的问题
+        # 3. 改进：计算盘口深度作为"稀疏度"指标（归一化为bps相对指标）
+        # 将价格跨度归一化为bps，避免不同价格区间资产（XAU $2800 vs BTC $50000）评估不公平
         if len(bids) >= 10 and len(asks) >= 10:
             bid_price_range = float(bids[0][0]) - float(bids[9][0])
             ask_price_range = float(asks[9][0]) - float(asks[0][0])
-            total_price_range = (bid_price_range + ask_price_range) / 2
             
-            # 深度稀疏度指标：价差 / 平均跨度，越大说明盘口越稀疏
-            # 归一化到 0-50 范围（防止极端值）
-            if total_price_range > 0:
-                depth_sparsity = min((best_ask - best_bid) / total_price_range * 50, 50)
+            # 将10档跨度归一化为相对于中间价的bps
+            bid_range_bps = (bid_price_range / mid_price) * 10000 if mid_price > 0 else 0
+            ask_range_bps = (ask_price_range / mid_price) * 10000 if mid_price > 0 else 0
+            total_range_bps = (bid_range_bps + ask_range_bps) / 2
+            
+            # 稀疏度 = 价差bps / 跨度bps 的比例
+            # 这个比例反映了"价差相对于盘口深度的大小"，与绝对价格无关
+            if total_range_bps > 0:
+                sparsity_ratio = spread_bps / total_range_bps
+                # 归一化到 0-50 范围，正常市场稀疏度比例约为 0.01-0.5
+                # 使用对数缩放避免极端值，sparsity_ratio=0.1 -> depth_sparsity≈10
+                depth_sparsity = min(sparsity_ratio * 100, 50)
             else:
                 depth_sparsity = 25  # 保护性默认值
         else:
             depth_sparsity = 25  # 深度不足时的默认值
         
         # 综合评分（0-100，越高越危险）
-        # 价差大 -> 风险高（权重：0.8，动态权重）
-        # 买卖不平衡 -> 风险高（权重：25）
-        # 盘口稀疏（深度小相对于价差） -> 风险高（权重：1.0）
+        # 价差大 -> 风险高（权重：1.0，绝对价差bps）
+        # 买卖不平衡 -> 风险高（权重：25，盘口压力）
+        # 盘口稀疏（价差相对于深度跨度大） -> 风险高（权重：0.5，相对深度）
         # 
-        # 改进逻辑：
-        # - 降低价差权重：相对稀疏度已衡量盘口密集程度，价差不应占主导
-        # - 提高稀疏度权重：真正的风险是"价差相对于深度跨度很大"
+        # 权重调整逻辑：
+        # - spread_bps：绝对价差是直接成本，保持权重1.0
+        # - volume_ratio：买卖不平衡是主要风险，保持权重25
+        # - depth_sparsity：归一化后降低权重到0.5，避免XAU等中价资产被过度惩罚
         risk_score = (
-            spread_bps * 0.8 +  # 价差权重（0.8，避免低价资产偏高）
-            (1 - volume_ratio) * 25 +  # 不平衡度权重（主要风险指标）
-            depth_sparsity * 1.0  # 深度稀疏度权重（提高到1.0）
+            spread_bps * 1.0 +  # 价差权重（绝对成本）
+            (1 - volume_ratio) * 25 +  # 不平衡度权重（主要风险）
+            depth_sparsity * 0.5  # 深度稀疏度权重（归一化后降低）
         )
         
+        risk_score = max(0, min(100, risk_score))
+        
+        # 应用资产类别系数
+        risk_score *= asset_multiplier
         risk_score = max(0, min(100, risk_score))
         
         # EMA平滑风险分数，减少短期波动
@@ -225,7 +251,11 @@ class MarketMaker:
         
         smoothed_score = self._risk_ema
         
-        desc = f"价差:{spread_bps:.1f}bps 量比:{volume_ratio:.2f} 稀疏度:{depth_sparsity:.1f}"
+        self.logger.debug(
+            "风险计算详情: spread_bps=%.2f, volume_ratio=%.2f, depth_sparsity=%.2f, multiplier=%.2f, raw_score=%.1f, ema_score=%.1f",
+            spread_bps, volume_ratio, depth_sparsity, asset_multiplier, risk_score, smoothed_score
+        )
+        desc = f"价差:{spread_bps:.1f}bps 量比:{volume_ratio:.2f} 稀疏度:{depth_sparsity:.1f} 系数:{asset_multiplier:.1f}"
         return smoothed_score, desc
     
     def get_adaptive_bps(self) -> tuple[float, float, str]:
