@@ -18,7 +18,7 @@ class StandXAdapter:
     并提供本地缓存和查询接口。支持异步订阅和事件处理。
     """
 
-    def __init__(self, symbol: str = "BTC-USD"):
+    def __init__(self, symbol: str = "BTC-USD", depth_levels: int = 5, midprice_method: str = "vwa"):
         self._market_stream: Optional[StandXMarketStream] = None
         self._order_stream: Optional[StandXOrderStream] = None
         self._depth_mid_price: Optional[float] = None
@@ -39,6 +39,8 @@ class StandXAdapter:
         self._health_check_task: Optional[asyncio.Task] = None  # 健康检查任务
         self._reconnecting: bool = False  # 重连标志
         self._symbol = symbol
+        self._depth_levels = depth_levels  # 用于深度加权计算的档数（默认5档）
+        self._midprice_method = midprice_method  # 中间价计算方式: "simple", "vwa", "vwap"
         self.logger = get_logger(__name__)
         self.notifier = None
         self.account_name = None
@@ -85,21 +87,10 @@ class StandXAdapter:
                     "timestamp": time.time()
                 }
 
-                best_bid = float(bids[0][0]) if bids else None
-                best_ask = float(asks[0][0]) if asks else None
-
-                # 计算中间价
-                if best_bid is not None and best_ask is not None:
-                    mid_price = (best_bid + best_ask) / 2
-                elif best_bid is not None:
-                    mid_price = best_bid
-                elif best_ask is not None:
-                    mid_price = best_ask
-                else:
-                    mid_price = None
+                # 计算中间价（使用配置的方式）
+                mid_price = self._calculate_midprice(bids, asks)
 
                 if mid_price is not None:
-
                     time_diff = 0.0
                     if self._last_price_update_time is not None:
                         # 计算新价格距离上次价格更新的时间间隔
@@ -107,14 +98,16 @@ class StandXAdapter:
 
                     if mid_price == self._depth_mid_price:
                         self.logger.info(
-                            "Depth book 中间价未变: %.4f, 距上次更新 %.2f 秒",
+                            "Depth book 中间价未变(%s): %.4f, 距上次更新 %.2f 秒",
+                            self._midprice_method.upper(),
                             mid_price,
                             time_diff,
                         )
                     else:
                         self._depth_mid_price = mid_price
                         self.logger.info(
-                            "Depth book 中间价更新: %.4f, 距上次更新 %.2f 秒",
+                            "Depth book 中间价更新(%s): %.4f, 距上次更新 %.2f 秒",
+                            self._midprice_method.upper(),
                             mid_price,
                             time_diff,
                         )
@@ -160,6 +153,179 @@ class StandXAdapter:
             Optional[dict]: 包含 bids, asks, timestamp 的字典
         """
         return self._depth_book_data
+
+    def _calculate_vwa_midprice(self, bids: list, asks: list) -> Optional[float]:
+        """
+        计算体积加权平均中间价 (VWA - Volume Weighted Average)
+        
+        原理：
+        - 双向取前N档数据，按体积加权
+        - 买单权重：体积越大权重越大
+        - 卖单权重：体积越大权重越大
+        - 中间价 = (加权买价 + 加权卖价) / 2
+        
+        优点：反映订单簿实际流动性分布，深度大的价格级别影响更大
+        
+        Args:
+            bids: 买单列表 [price, volume]
+            asks: 卖单列表 [price, volume]
+            
+        Returns:
+            体积加权中间价，若数据不足返回None
+        """
+        try:
+            if not bids or not asks:
+                return None
+            
+            # 取前N档
+            bid_levels = bids[:self._depth_levels]
+            ask_levels = asks[:self._depth_levels]
+            
+            if not bid_levels or not ask_levels:
+                return None
+            
+            # 计算加权买价
+            total_bid_volume = sum(float(level[1]) for level in bid_levels)
+            if total_bid_volume > 0:
+                weighted_bid = sum(
+                    float(level[0]) * float(level[1]) for level in bid_levels
+                ) / total_bid_volume
+            else:
+                weighted_bid = float(bid_levels[0][0])
+            
+            # 计算加权卖价
+            total_ask_volume = sum(float(level[1]) for level in ask_levels)
+            if total_ask_volume > 0:
+                weighted_ask = sum(
+                    float(level[0]) * float(level[1]) for level in ask_levels
+                ) / total_ask_volume
+            else:
+                weighted_ask = float(ask_levels[0][0])
+            
+            # 中间价
+            vwa_mid_price = (weighted_bid + weighted_ask) / 2
+            
+            self.logger.debug(
+                "VWA中间价: bid=%.2f(成交量:%.4f) ask=%.2f(成交量:%.4f) mid=%.2f",
+                weighted_bid, total_bid_volume, weighted_ask, total_ask_volume, vwa_mid_price
+            )
+            
+            return vwa_mid_price
+            
+        except Exception as e:
+            self.logger.exception("VWA中间价计算失败: %s", e)
+            return None
+
+    def _calculate_vwap_midprice(self, bids: list, asks: list) -> Optional[float]:
+        """
+        计算成交量加权平均中间价 (VWAP)
+        
+        原理：按全市场流动性加权计算，公式更加全局性
+        - bid_vwap = Σ(price * volume) / Σ(volume)  [买侧]
+        - ask_vwap = Σ(price * volume) / Σ(volume)  [卖侧]
+        - mid_price = (bid_vwap * ask_volume + ask_vwap * bid_volume) / (bid_volume + ask_volume)
+        
+        优点：反映整个订单簿的压力，对市场流动性极度不对称敏感
+        
+        Args:
+            bids: 买单列表 [price, volume]
+            asks: 卖单列表 [price, volume]
+            
+        Returns:
+            VWAP中间价，若数据不足返回None
+        """
+        try:
+            if not bids or not asks:
+                return None
+            
+            # 取前N档
+            bid_levels = bids[:self._depth_levels]
+            ask_levels = asks[:self._depth_levels]
+            
+            if not bid_levels or not ask_levels:
+                return None
+            
+            # 计算买侧流动性加权价格
+            total_bid_volume = sum(float(level[1]) for level in bid_levels)
+            bid_vwap = (
+                sum(float(level[0]) * float(level[1]) for level in bid_levels) / total_bid_volume
+                if total_bid_volume > 0
+                else float(bid_levels[0][0])
+            )
+            
+            # 计算卖侧流动性加权价格
+            total_ask_volume = sum(float(level[1]) for level in ask_levels)
+            ask_vwap = (
+                sum(float(level[0]) * float(level[1]) for level in ask_levels) / total_ask_volume
+                if total_ask_volume > 0
+                else float(ask_levels[0][0])
+            )
+            
+            # VWAP中间价：按流动性比例加权
+            total_volume = total_bid_volume + total_ask_volume
+            if total_volume > 0:
+                vwap_mid_price = (
+                    bid_vwap * total_ask_volume + ask_vwap * total_bid_volume
+                ) / total_volume
+            else:
+                vwap_mid_price = (bid_vwap + ask_vwap) / 2
+            
+            self.logger.debug(
+                "VWAP中间价: bid_vwap=%.2f(成交量:%.4f) ask_vwap=%.2f(成交量:%.4f) mid=%.2f",
+                bid_vwap, total_bid_volume, ask_vwap, total_ask_volume, vwap_mid_price
+            )
+            
+            return vwap_mid_price
+            
+        except Exception as e:
+            self.logger.exception("VWAP中间价计算失败: %s", e)
+            return None
+
+    def _calculate_simple_midprice(self, bids: list, asks: list) -> Optional[float]:
+        """
+        简单中间价（原方式）：(best_bid + best_ask) / 2
+        
+        Args:
+            bids: 买单列表
+            asks: 卖单列表
+            
+        Returns:
+            简单中间价
+        """
+        best_bid = float(bids[0][0]) if bids else None
+        best_ask = float(asks[0][0]) if asks else None
+        
+        if best_bid is not None and best_ask is not None:
+            return (best_bid + best_ask) / 2
+        elif best_bid is not None:
+            return best_bid
+        elif best_ask is not None:
+            return best_ask
+        else:
+            return None
+
+    def _calculate_midprice(self, bids: list, asks: list) -> Optional[float]:
+        """
+        根据配置的方式计算中间价
+        
+        支持三种方式：
+        - "simple": 简单中间价 (best_bid + best_ask) / 2
+        - "vwa": 体积加权平均中间价（推荐做市场景）
+        - "vwap": 成交量加权平均中间价（对冲风险需求）
+        
+        Args:
+            bids: 买单列表
+            asks: 卖单列表
+            
+        Returns:
+            中间价
+        """
+        if self._midprice_method == "vwa":
+            return self._calculate_vwa_midprice(bids, asks)
+        elif self._midprice_method == "vwap":
+            return self._calculate_vwap_midprice(bids, asks)
+        else:  # simple
+            return self._calculate_simple_midprice(bids, asks)
 
     async def on_order(self, data):
         """

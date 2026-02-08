@@ -1039,8 +1039,11 @@ async def main():
         await notifier.send(f"❌ *认证失败*\n" f"账户: `{account_name}`\n" f"交易对: `{symbol}`\n" f"错误: {e}")
         raise
 
-    # 创建 StandX 适配器
-    standx_adapter = StandXAdapter(symbol=symbol)
+    # 创建 StandX 适配器（支持多种中间价计算方式）
+    depth_levels = int(os.getenv("MIDPRICE_DEPTH_LEVELS", "5"))
+    midprice_method = os.getenv("MIDPRICE_METHOD", "vwa")  # "simple", "vwa", "vwap"
+    standx_adapter = StandXAdapter(symbol=symbol, depth_levels=depth_levels, midprice_method=midprice_method)
+    logger.info("初始化 StandX 适配器: 中间价计算方式=%s, 深度档数=%d", midprice_method, depth_levels)
     # 订阅depth_book频道
     await standx_adapter.subscribe_depth_book()
     await standx_adapter.connect_order_stream(auth)
