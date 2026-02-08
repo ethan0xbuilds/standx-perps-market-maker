@@ -155,6 +155,7 @@ class MarketMaker:
     def calculate_market_risk(self) -> tuple[float, str]:
         """
         计算市场风险等级（基于盘口压力）
+        改进：深度指标改为相对指标，避免低价资产（XAG）被放大
         
         Returns:
             (risk_score, description) 风险分数 0-100 和描述
@@ -183,20 +184,35 @@ class MarketMaker:
         ask_volume = sum(float(a[1]) for a in asks[:5])
         volume_ratio = min(bid_volume, ask_volume) / max(bid_volume, ask_volume) if max(bid_volume, ask_volume) > 0 else 0.5
         
-        # 3. 计算价格密集度（前10档价格跨度）
+        # 3. 改进：计算盘口深度作为"稀疏度"指标（相对指标）
+        # 用最优10档价格跨度与最优价差的比例来衡量盘口密集度
+        # 避免低价资产（XAG）的绝对价格差被放大的问题
         if len(bids) >= 10 and len(asks) >= 10:
-            bid_depth = (float(bids[0][0]) - float(bids[9][0])) / mid_price * 10000
-            ask_depth = (float(asks[9][0]) - float(asks[0][0])) / mid_price * 10000
-            depth_avg = (bid_depth + ask_depth) / 2
+            bid_price_range = float(bids[0][0]) - float(bids[9][0])
+            ask_price_range = float(asks[9][0]) - float(asks[0][0])
+            total_price_range = (bid_price_range + ask_price_range) / 2
+            
+            # 深度稀疏度指标：价差 / 平均跨度，越大说明盘口越稀疏
+            # 归一化到 0-50 范围（防止极端值）
+            if total_price_range > 0:
+                depth_sparsity = min((best_ask - best_bid) / total_price_range * 50, 50)
+            else:
+                depth_sparsity = 25  # 保护性默认值
         else:
-            depth_avg = 50  # 默认中等
+            depth_sparsity = 25  # 深度不足时的默认值
         
         # 综合评分（0-100，越高越危险）
-        # 价差大 -> 风险高；买卖不平衡 -> 风险高；深度越大（盘口越稀） -> 风险高
+        # 价差大 -> 风险高（权重：0.8，动态权重）
+        # 买卖不平衡 -> 风险高（权重：25）
+        # 盘口稀疏（深度小相对于价差） -> 风险高（权重：1.0）
+        # 
+        # 改进逻辑：
+        # - 降低价差权重：相对稀疏度已衡量盘口密集程度，价差不应占主导
+        # - 提高稀疏度权重：真正的风险是"价差相对于深度跨度很大"
         risk_score = (
-            spread_bps * 2 +  # 价差权重
-            (1 - volume_ratio) * 25 +  # 不平衡度权重
-            min(depth_avg, 50) * 0.5  # 深度权重
+            spread_bps * 0.8 +  # 价差权重（0.8，避免低价资产偏高）
+            (1 - volume_ratio) * 25 +  # 不平衡度权重（主要风险指标）
+            depth_sparsity * 1.0  # 深度稀疏度权重（提高到1.0）
         )
         
         risk_score = max(0, min(100, risk_score))
@@ -209,7 +225,7 @@ class MarketMaker:
         
         smoothed_score = self._risk_ema
         
-        desc = f"价差:{spread_bps:.1f}bps 量比:{volume_ratio:.2f} 深度:{depth_avg:.1f}bps"
+        desc = f"价差:{spread_bps:.1f}bps 量比:{volume_ratio:.2f} 稀疏度:{depth_sparsity:.1f}"
         return smoothed_score, desc
     
     def get_adaptive_bps(self) -> tuple[float, float, str]:
