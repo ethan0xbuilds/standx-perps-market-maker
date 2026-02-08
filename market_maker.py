@@ -111,6 +111,18 @@ class MarketMaker:
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
 
+    def _get_price_precision(self) -> int:
+        """
+        根据交易对获取价格精度
+        
+        Returns:
+            int: 小数位数 (XAU-USD: 1, 其他: 2)
+        """
+        if "XAU" in self.symbol:
+            return 1  # XAU-USD 精度 0.1
+        else:
+            return 2  # 其他（如 BTC-USD）精度 0.01
+
     def calculate_order_prices(self, market_price: float) -> tuple:
         """
         计算双向订单价格
@@ -123,6 +135,12 @@ class MarketMaker:
         """
         buy_price = market_price * (1 - self.target_bps / 10000)
         sell_price = market_price * (1 + self.target_bps / 10000)
+        
+        # 根据交易对精度进行四舍五入
+        precision = self._get_price_precision()
+        buy_price = round(buy_price, precision)
+        sell_price = round(sell_price, precision)
+        
         return (buy_price, sell_price)
     
     def calculate_market_risk(self) -> tuple[float, str]:
@@ -319,6 +337,8 @@ class MarketMaker:
                 return
         
         buy_price, sell_price = self.calculate_order_prices(market_price)
+        precision = self._get_price_precision()
+        price_format = f"{{:.{precision}f}}"
 
         self.logger.info("下双向限价单 (市价: %.2f)", market_price)
 
@@ -329,16 +349,16 @@ class MarketMaker:
                 side="buy",
                 order_type="limit",
                 qty=self.qty,
-                price=f"{buy_price:.2f}",
+                price=price_format.format(buy_price),
                 time_in_force="alo",
                 reduce_only=False,
                 margin_mode=self.margin_mode,
                 leverage=self.leverage,
             )
             self.logger.info(
-                "买单: %s @ %.2f",
+                "买单: %s @ %s",
                 self.qty,
-                buy_price,
+                price_format.format(buy_price),
             )
         except Exception as e:
             self.logger.exception("买单失败: %s", e)
@@ -350,16 +370,16 @@ class MarketMaker:
                 side="sell",
                 order_type="limit",
                 qty=self.qty,
-                price=f"{sell_price:.2f}",
+                price=price_format.format(sell_price),
                 time_in_force="alo",
                 reduce_only=False,
                 margin_mode=self.margin_mode,
                 leverage=self.leverage,
             )
             self.logger.info(
-                "卖单: %s @ %.2f",
+                "卖单: %s @ %s",
                 self.qty,
-                sell_price,
+                price_format.format(sell_price),
             )
         except Exception as e:
             self.logger.exception("卖单失败: %s", e)
@@ -488,12 +508,16 @@ class MarketMaker:
                 else 1 - self._position_quick_tp_bps / 10000
             )
             
+            precision = self._get_price_precision()
+            tp_price = round(tp_price, precision)
+            price_format = f"{{:.{precision}f}}"
+            
             await self.exchange_adapter.new_order(
                 symbol=self.symbol,
                 side=tp_side,
                 order_type="limit",
                 qty=qty,
-                price=f"{tp_price:.2f}",
+                price=price_format.format(tp_price),
                 time_in_force="gtc",
                 reduce_only=True,
                 margin_mode=self.margin_mode,
@@ -502,8 +526,8 @@ class MarketMaker:
             
             position["tp_placed"] = True
             self.logger.info(
-                "✅ 一级止盈单已挂: 数量=%s, 价格=%.2f (利润: %.1f bps)",
-                qty, tp_price, self._position_quick_tp_bps
+                "✅ 一级止盈单已挂: 数量=%s, 价格=%s (利润: %.1f bps)",
+                qty, price_format.format(tp_price), self._position_quick_tp_bps
             )
             return True
         except Exception as e:
@@ -534,12 +558,16 @@ class MarketMaker:
                 else 1 + self._position_stop_loss_bps / 10000
             )
             
+            precision = self._get_price_precision()
+            sl_price = round(sl_price, precision)
+            price_format = f"{{:.{precision}f}}"
+            
             await self.exchange_adapter.new_order(
                 symbol=self.symbol,
                 side=sl_side,
                 order_type="limit",
                 qty=qty,
-                price=f"{sl_price:.2f}",
+                price=price_format.format(sl_price),
                 time_in_force="gtc",
                 reduce_only=True,
                 margin_mode=self.margin_mode,
@@ -548,8 +576,8 @@ class MarketMaker:
             
             position["sl_placed"] = True
             self.logger.info(
-                "🛡️ 止损单已挂: 数量=%s, 价格=%.2f (止损: %.1f bps)",
-                qty, sl_price, self._position_stop_loss_bps
+                "🛡️ 止损单已挂: 数量=%s, 价格=%s (止损: %.1f bps)",
+                qty, price_format.format(sl_price), self._position_stop_loss_bps
             )
             return True
         except Exception as e:
