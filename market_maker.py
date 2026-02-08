@@ -222,8 +222,8 @@ class MarketMaker:
             if risk_score >= 25:
                 new_level = "medium"
         elif self._current_risk_level == "medium":
-            # 中风险状态：<15 降到低风险，≥55 升到高风险
-            if risk_score < 15:
+            # 中风险状态：<20 降到低风险，≥55 升到高风险
+            if risk_score < 20:
                 new_level = "low"
             elif risk_score >= 55:
                 new_level = "high"
