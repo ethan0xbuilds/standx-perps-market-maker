@@ -14,10 +14,19 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# 首先加载环境变量，必须在其他模块导入之前
+# 在导入其他模块之前：先解析参数和加载 .env
 from dotenv import load_dotenv
 
-# 本地模块导入
+parser = argparse.ArgumentParser(description='StandX 做市机器人')
+parser.add_argument('--config', type=str, default='.env',
+                    help='配置文件路径 (默认: .env)')
+parser.add_argument('--log-prefix', type=str, default='',
+                    help='日志文件前缀 (默认: 空)')
+args = parser.parse_args()
+
+# 加载环境变量（必须在其他模块导入之前）
+load_dotenv(args.config)
+
 from adapter.standx_adapter import StandXAdapter
 from standx_auth import StandXAuth
 import standx_api as api
@@ -929,22 +938,11 @@ class MarketMaker:
 async def main():
     """主函数"""
     
-    # 解析命令行参数
-    parser = argparse.ArgumentParser(description='StandX 做市机器人')
-    parser.add_argument('--config', type=str, default='.env',
-                        help='配置文件路径 (默认: .env)')
-    parser.add_argument('--log-prefix', type=str, default='',
-                        help='日志文件前缀 (默认: 空)')
-    args = parser.parse_args()
-    
     # 配置日志（多账户模式下必须指定前缀）
     configure_logging(log_prefix=args.log_prefix)
     
     # 获取 logger 实例
     logger = get_logger(__name__)
-    
-    # 加载指定的配置文件
-    load_dotenv(args.config)
     logger.info("使用配置文件: %s", args.config)
 
     # 加载配置
