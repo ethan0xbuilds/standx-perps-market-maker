@@ -672,7 +672,8 @@ class MarketMaker:
                 
                 # 动态调整挂单参数（基于市场风险）
                 new_target_bps, new_min_bps, new_max_bps, reason = self.get_adaptive_bps()
-                
+                self.logger.info("当前风险等级: %s, 目标偏离: %.1f bps", self._current_risk_level, new_target_bps)
+
                 # 检测参数是否发生显著变化（超过20%）
                 params_changed = (
                     abs(new_target_bps - self.target_bps) / self.target_bps > 0.2 if self.target_bps > 0 else False
