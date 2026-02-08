@@ -292,8 +292,8 @@ class MarketMaker:
         
         # 根据风险等级决定挂单策略
         if new_level == "low":
-            target_bps = 8.0
-            min_bps = 6.0
+            target_bps = 9.0
+            min_bps = 8.0
             max_bps = 10.0
             reason = f"低风险({risk_score:.0f})"
         elif new_level == "medium":

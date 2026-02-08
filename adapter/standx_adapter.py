@@ -106,8 +106,7 @@ class StandXAdapter:
                         time_diff = time.time() - self._last_price_update_time
 
                     if mid_price == self._depth_mid_price:
-                        # 中间价未变，打印DEBUG日志表示接收到数据但价格未变
-                        self.logger.debug(
+                        self.logger.info(
                             "Depth book 中间价未变: %.4f, 距上次更新 %.2f 秒",
                             mid_price,
                             time_diff,
