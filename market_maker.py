@@ -967,9 +967,9 @@ async def main():
         raise
 
     # 创建 StandX 适配器
-    standx_adapter = StandXAdapter()
+    standx_adapter = StandXAdapter(symbol=symbol)
     # 订阅depth_book频道
-    await standx_adapter.subscribe_depth_book(symbol="BTC-USD")
+    await standx_adapter.subscribe_depth_book()
     await standx_adapter.connect_order_stream(auth)
 
     # 创建做市器

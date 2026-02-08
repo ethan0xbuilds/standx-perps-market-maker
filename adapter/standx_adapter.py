@@ -18,7 +18,7 @@ class StandXAdapter:
     并提供本地缓存和查询接口。支持异步订阅和事件处理。
     """
 
-    def __init__(self):
+    def __init__(self, symbol: str = "BTC-USD"):
         self._market_stream: Optional[StandXMarketStream] = None
         self._order_stream: Optional[StandXOrderStream] = None
         self._depth_mid_price: Optional[float] = None
@@ -38,6 +38,7 @@ class StandXAdapter:
         self._last_message_time: float = 0  # 最后收到消息的时间
         self._health_check_task: Optional[asyncio.Task] = None  # 健康检查任务
         self._reconnecting: bool = False  # 重连标志
+        self._symbol = symbol
         self.logger = get_logger(__name__)
         self.notifier = None
         self.account_name = None
@@ -67,7 +68,8 @@ class StandXAdapter:
     async def on_depth_book(self, data):
         try:
             self._last_message_time = time.time()  # 更新心跳时间
-            if data.get("channel") == "depth_book" and data.get("symbol") == "BTC-USD":
+            self.logger.debug("收到 depth_book 数据: %s", data)
+            if data.get("channel") == "depth_book" and data.get("symbol") == self._symbol:
                 depth_book_data = data.get("data", {})
                 bids = depth_book_data.get("bids") or []
                 asks = depth_book_data.get("asks") or []
@@ -110,7 +112,6 @@ class StandXAdapter:
                             mid_price,
                             time_diff,
                         )
-                        return
                     else:
                         self._depth_mid_price = mid_price
                         self.logger.info(
@@ -118,17 +119,16 @@ class StandXAdapter:
                             mid_price,
                             time_diff,
                         )
-                        self._last_price_update_time = time.time()
-                        self._price_updated_and_processed = False
-                        self._price_event.set()  # 设置事件，通知等待者有新价格
+                    self._last_price_update_time = time.time()
+                    self._price_updated_and_processed = False
+                    self._price_event.set()  # 设置事件，通知等待者有新价格
         except Exception as e:
             self.logger.exception("处理 depth_book 数据失败: %s", e)
 
-    async def subscribe_depth_book(self, symbol: str = "BTC-USD"):
+    async def subscribe_depth_book(self):
         """
         订阅深度数据频道
         Args:
-            symbol (str): 交易对，默认 BTC-USD
         """
         if not self._market_stream:
             self._market_stream = StandXMarketStream()
@@ -138,7 +138,7 @@ class StandXAdapter:
             await self._authenticate_and_subscribe()
 
         await self.subscribe_market(
-            channel="depth_book", symbol=symbol, callback=self.on_depth_book
+            channel="depth_book", symbol=self._symbol, callback=self.on_depth_book
         )
         
         # 启动健康检查任务
@@ -441,7 +441,7 @@ class StandXAdapter:
             # 重新订阅depth_book
             await self._market_stream.subscribe(
                 channel="depth_book", 
-                symbol="BTC-USD", 
+                symbol=self._symbol,
                 callback=self.on_depth_book
             )
             self.logger.info("已重新订阅depth_book")

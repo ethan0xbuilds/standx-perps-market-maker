@@ -568,7 +568,7 @@ def main():
     )
 
     # Public sanity check: query symbol price
-    symbol = os.getenv("LIMIT_ORDER_SYMBOL", "BTC-USD")
+    symbol = os.getenv("MARKET_MAKER_SYMBOL", "BTC-USD")
     price = auth.query_symbol_price(symbol)
     logger.debug("Public Price (%s): %s", symbol, json.dumps(price, indent=2))
 
