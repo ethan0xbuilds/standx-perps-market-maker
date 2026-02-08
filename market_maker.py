@@ -92,10 +92,10 @@ class MarketMaker:
         
         # 持仓管理参数（分层止盈止损）
         self._position_quick_tp_bps = float(os.getenv("POSITION_QUICK_TP_BPS", "1.5"))  # 一级止盈点数
-        self._position_hold_seconds = float(os.getenv("POSITION_HOLD_SECONDS", "5"))  # 持仓等待时间
-        self._position_force_exit_bps = float(os.getenv("POSITION_FORCE_EXIT_BPS", "8"))  # 二级强制止盈点数
+        self._position_hold_seconds = float(os.getenv("POSITION_HOLD_SECONDS", "3"))  # 持仓等待时间
+        self._position_force_exit_bps = float(os.getenv("POSITION_FORCE_EXIT_BPS", "5"))  # 二级强制止盈点数
         self._position_stop_loss_bps = float(os.getenv("POSITION_STOP_LOSS_BPS", "4"))  # 止损点数
-        self._max_position_hold_time = float(os.getenv("MAX_POSITION_HOLD_TIME", "30"))  # 最大持仓时间（秒）
+        self._max_position_hold_time = float(os.getenv("MAX_POSITION_HOLD_TIME", "15"))  # 最大持仓时间（秒）
         
         # 持仓跟踪状态
         self._tracked_position = None  # 当前跟踪的持仓对象
