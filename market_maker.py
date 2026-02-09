@@ -106,6 +106,9 @@ class MarketMaker:
         # 余额汇报参数
         self._balance_report_interval = float(os.getenv("BALANCE_REPORT_INTERVAL", "1800"))  # 默认每半小时汇报一次（秒）
         
+        # 余额退出阈值（平仓后如果余额低于此值则优雅退出）
+        self._balance_exit_threshold = float(os.getenv("BALANCE_EXIT_THRESHOLD", "10"))  # 默认10 USDT
+        
         # 获取 logger 实例
         self.logger = get_logger(__name__)
 
@@ -654,6 +657,56 @@ class MarketMaker:
         except Exception as e:
             self.logger.exception("取消止盈/止损单失败: %s", e)
 
+    async def _check_balance_and_exit(self):
+        """
+        检查账户余额，如果低于阈值则触发优雅退出
+        """
+        try:
+            # 等待5秒让平仓订单完全结算
+            await asyncio.sleep(5.0)
+            
+            # 查询余额
+            balance = await api.query_balance(self.auth)
+            total_balance = float(balance.get("balance", "0"))
+            equity = float(balance.get("equity", "0"))
+            
+            self.logger.info(
+                "平仓后余额检查: 总余额=%.2f, 权益=%.2f, 退出阈值=%.2f",
+                total_balance, equity, self._balance_exit_threshold
+            )
+            
+            # 检查是否低于阈值
+            if total_balance < self._balance_exit_threshold:
+                self.logger.warning(
+                    "⚠️ 余额 %.2f 低于退出阈值 %.2f，触发优雅退出",
+                    total_balance, self._balance_exit_threshold
+                )
+                
+                # 发送通知
+                if self.notifier:
+                    beijing_tz = ZoneInfo("Asia/Shanghai")
+                    beijing_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
+                    await self.notifier.send(
+                        f"⚠️ *余额不足，程序退出*\n"
+                        f"账户: `{self.account_name}`\n"
+                        f"时间: {beijing_time}\n"
+                        f"交易对: `{self.symbol}`\n"
+                        f"总余额: ${total_balance:.2f}\n"
+                        f"权益: ${equity:.2f}\n"
+                        f"退出阈值: ${self._balance_exit_threshold:.2f}\n"
+                        f"原因: 平仓后余额低于设定阈值"
+                    )
+                
+                # 触发优雅关闭
+                self._shutdown_requested = True
+                self._shutdown_event.set()
+            else:
+                self.logger.info("✅ 余额充足，继续运行")
+                
+        except Exception as e:
+            self.logger.exception("余额检查失败: %s", e)
+            # 余额查询失败不应该导致程序退出，只记录错误
+
     async def _market_close_position(self, position: dict) -> bool:
         """
         市价平仓
@@ -678,6 +731,10 @@ class MarketMaker:
             )
             
             self.logger.info("🔴 市价平仓已执行: 数量=%s", qty)
+            
+            # 平仓后检查余额
+            await self._check_balance_and_exit()
+            
             return True
         except Exception as e:
             self.logger.exception("市价平仓失败: %s", e)
