@@ -487,7 +487,7 @@ class StandXAdapter:
             from standx_api import query_open_orders
             
             self.logger.info("开始全量同步订单状态...")
-            # 查询API最多3秒超时，防止阻塞
+            # 查询API使用配置的超时时间，防止阻塞
             try:
                 result = await asyncio.wait_for(
                     query_open_orders(self._auth, symbol=None, limit=100),
@@ -541,7 +541,7 @@ class StandXAdapter:
         """从服务器同步持仓状态（使用HTTP API，带超时）"""
         try:
             self.logger.info("开始同步持仓状态...")
-            # 查询API最多3秒超时，防止阻塞
+            # 查询API使用配置的超时时间，防止阻塞
             try:
                 positions = await asyncio.wait_for(
                     query_positions(self._auth, symbol=self._symbol),
@@ -581,8 +581,8 @@ class StandXAdapter:
                     )
             
             # 更新持仓数据
-            # Note: _last_position_qty is maintained separately to track changes
-            # between updates in the on_position handler, not as duplicate state
+            # Note: _last_position_qty is used as a baseline for change detection
+            # across both sync (here) and real-time updates (on_position handler)
             if current_position:
                 self._position = current_position
                 self._last_position_qty = new_qty
