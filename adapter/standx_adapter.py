@@ -581,9 +581,9 @@ class StandXAdapter:
                     )
             
             # 更新持仓数据
-            # Note: _last_position_qty is used as a baseline for change detection
-            # across both sync (here) and real-time updates (on_position handler)
             if current_position:
+                # Note: _last_position_qty is used as a baseline for change detection
+                # across both sync (here) and real-time updates (on_position handler)
                 self._position = current_position
                 self._last_position_qty = new_qty
                 self.logger.info(
@@ -593,6 +593,7 @@ class StandXAdapter:
                     current_position.get("entry_price")
                 )
             else:
+                # Clear both position data and tracking quantity
                 self._position = {}
                 self._last_position_qty = 0
                 self.logger.info("持仓同步完成: 无持仓")
