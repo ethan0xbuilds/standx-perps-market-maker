@@ -552,8 +552,8 @@ class StandXAdapter:
 
     async def _health_check_loop(self):
         """健康检查循环 - 监控WebSocket连接"""
-        check_interval = 30.0  # 每30秒检查一次
-        timeout_threshold = 120.0  # 2分钟无消息视为超时
+        check_interval = 3.0  # 每3秒检查一次
+        timeout_threshold = 15.0  # 15秒钟无消息视为超时
         
         self.logger.info("健康检查循环已启动，检查间隔: %.0f秒，超时阈值: %.0f秒", check_interval, timeout_threshold)
         
