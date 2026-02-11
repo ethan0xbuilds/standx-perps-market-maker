@@ -1015,7 +1015,21 @@ class MarketMaker:
         self.logger.info("订单需重挂，原因: %s", reason)
         
         # 取消所有订单并等待确认
-        await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
+        try:
+            await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
+        except RuntimeError as e:
+            if "订单流未连接" in str(e):
+                self.logger.warning("订单流未连接，尝试重连后重试取消订单...")
+                try:
+                    await self.exchange_adapter.connect_order_stream(self.auth)
+                    await self.exchange_adapter.cancel_all_orders(symbol=self.symbol)
+                except Exception as reconnect_error:
+                    self.logger.exception("订单流重连/取消失败，跳过本次重挂: %s", reconnect_error)
+                    return
+            else:
+                self.logger.exception("取消订单失败，跳过本次重挂: %s", e)
+                return
+
         cancel_success = await self.exchange_adapter.wait_for_order_count(
             0, 0, timeout=3.0
         )

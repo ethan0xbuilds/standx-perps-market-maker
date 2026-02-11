@@ -837,6 +837,16 @@ class StandXAdapter:
         if not self._sync_task or self._sync_task.done():
             self._sync_task = asyncio.create_task(self._periodic_sync_loop())
 
+    async def _ensure_order_stream_connected(self):
+        """确保订单流已连接，未连接时尝试重连"""
+        if self._order_stream and self._order_stream.connected:
+            return
+        if not self._auth:
+            raise RuntimeError("订单流未连接且缺少认证信息")
+
+        self.logger.warning("订单流未连接，尝试重连...")
+        await self.connect_order_stream(self._auth)
+
     async def new_order(
         self,
         symbol: str,
@@ -864,8 +874,7 @@ class StandXAdapter:
         Returns:
             dict: 下单结果
         """
-        if not self._order_stream or not self._order_stream.connected:
-            raise RuntimeError("订单流未连接，请先调用 connect_order_stream()")
+        await self._ensure_order_stream_connected()
 
         await self._order_stream.new_order(
             symbol=symbol,
@@ -939,8 +948,7 @@ class StandXAdapter:
         Args:
             symbol (Optional[str]): 交易对，若提供则只取消该交易对的订单
         """
-        if not self._order_stream or not self._order_stream.connected:
-            raise RuntimeError("订单流未连接，请先调用 connect_order_stream()")
+        await self._ensure_order_stream_connected()
 
         orders_to_cancel = (
             [order for order in self._orders_dict.values() if order["symbol"] == symbol]
