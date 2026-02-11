@@ -17,6 +17,12 @@ class StandXAdapter:
     StandXAdapter 用于对接 StandX 市场 WebSocket，处理市场深度、订单、持仓等推送数据，
     并提供本地缓存和查询接口。支持异步订阅和事件处理。
     """
+    
+    # Timeout constants (in seconds)
+    POSITION_SYNC_TIMEOUT = 3.0  # HTTP API query timeout for position sync
+    ORDER_SYNC_TIMEOUT = 3.0     # HTTP API query timeout for order sync
+    RECONNECT_SYNC_TIMEOUT = 5.0 # Overall timeout for sync during reconnection
+    POSITION_QTY_EPSILON = 1e-8  # Tolerance for floating point comparison
 
     def __init__(self, symbol: str = "BTC-USD", depth_levels: int = 5, midprice_method: str = "vwa"):
         self._market_stream: Optional[StandXMarketStream] = None
@@ -485,10 +491,10 @@ class StandXAdapter:
             try:
                 result = await asyncio.wait_for(
                     query_open_orders(self._auth, symbol=None, limit=100),
-                    timeout=3.0
+                    timeout=self.ORDER_SYNC_TIMEOUT
                 )
             except asyncio.TimeoutError:
-                self.logger.warning("查询开仓订单API超时（3秒），本次同步跳过")
+                self.logger.warning("查询开仓订单API超时（%.0f秒），本次同步跳过", self.ORDER_SYNC_TIMEOUT)
                 return
             
             server_orders = result.get("result", [])
@@ -539,10 +545,10 @@ class StandXAdapter:
             try:
                 positions = await asyncio.wait_for(
                     query_positions(self._auth, symbol=self._symbol),
-                    timeout=3.0
+                    timeout=self.POSITION_SYNC_TIMEOUT
                 )
             except asyncio.TimeoutError:
-                self.logger.warning("查询持仓API超时（3秒），本次同步跳过")
+                self.logger.warning("查询持仓API超时（%.0f秒），本次同步跳过", self.POSITION_SYNC_TIMEOUT)
                 return
             
             # 获取当前交易对的持仓
@@ -557,8 +563,8 @@ class StandXAdapter:
             old_qty = float(self._position.get("qty", 0)) if self._position else 0
             new_qty = float(current_position.get("qty", 0)) if current_position else 0
             
-            # 检测持仓变化
-            if old_qty != new_qty:
+            # 检测持仓变化（使用容差比较避免浮点误差）
+            if abs(old_qty - new_qty) > self.POSITION_QTY_EPSILON:
                 self.logger.warning(
                     "检测到持仓不一致: 本地 %s -> 服务器 %s",
                     old_qty,
@@ -575,6 +581,8 @@ class StandXAdapter:
                     )
             
             # 更新持仓数据
+            # Note: _last_position_qty is maintained separately to track changes
+            # between updates in the on_position handler, not as duplicate state
             if current_position:
                 self._position = current_position
                 self._last_position_qty = new_qty
@@ -687,20 +695,20 @@ class StandXAdapter:
                     try:
                         await asyncio.wait_for(
                             self._sync_positions_from_server(),
-                            timeout=5.0
+                            timeout=self.RECONNECT_SYNC_TIMEOUT
                         )
                     except asyncio.TimeoutError:
-                        self.logger.warning("重连后持仓同步超时（5秒），跳过本次同步")
+                        self.logger.warning("重连后持仓同步超时（%.0f秒），跳过本次同步", self.RECONNECT_SYNC_TIMEOUT)
                     except Exception as e:
                         self.logger.exception("重连后持仓同步失败: %s", e)
                     
                     try:
                         await asyncio.wait_for(
                             self._sync_orders_from_server(),
-                            timeout=5.0
+                            timeout=self.RECONNECT_SYNC_TIMEOUT
                         )
                     except asyncio.TimeoutError:
-                        self.logger.warning("重连后订单同步超时（5秒），跳过本次同步")
+                        self.logger.warning("重连后订单同步超时（%.0f秒），跳过本次同步", self.RECONNECT_SYNC_TIMEOUT)
                     except Exception as e:
                         self.logger.exception("重连后订单同步失败: %s", e)
             
