@@ -531,6 +531,67 @@ class StandXAdapter:
         except Exception as e:
             self.logger.exception("订单同步失败: %s", e)
 
+    async def _sync_positions_from_server(self):
+        """从服务器同步持仓状态（使用HTTP API，带超时）"""
+        try:
+            self.logger.info("开始同步持仓状态...")
+            # 查询API最多3秒超时，防止阻塞
+            try:
+                positions = await asyncio.wait_for(
+                    query_positions(self._auth, symbol=self._symbol),
+                    timeout=3.0
+                )
+            except asyncio.TimeoutError:
+                self.logger.warning("查询持仓API超时（3秒），本次同步跳过")
+                return
+            
+            # 获取当前交易对的持仓
+            current_position = None
+            if positions:
+                for pos in positions:
+                    if pos.get("symbol") == self._symbol:
+                        current_position = pos
+                        break
+            
+            # 更新本地缓存
+            old_qty = float(self._position.get("qty", 0)) if self._position else 0
+            new_qty = float(current_position.get("qty", 0)) if current_position else 0
+            
+            # 检测持仓变化
+            if old_qty != new_qty:
+                self.logger.warning(
+                    "检测到持仓不一致: 本地 %s -> 服务器 %s",
+                    old_qty,
+                    new_qty
+                )
+                if self.notifier:
+                    await self.notifier.send(
+                        f"⚠️ *持仓状态已同步*\n"
+                        f"账户: `{self.account_name}`\n"
+                        f"交易对: `{self._symbol}`\n"
+                        f"本地持仓: {old_qty}\n"
+                        f"服务器持仓: {new_qty}\n"
+                        f"已更新为服务器数据"
+                    )
+            
+            # 更新持仓数据
+            if current_position:
+                self._position = current_position
+                self._last_position_qty = new_qty
+                self.logger.info(
+                    "持仓同步完成: symbol=%s, qty=%s, entry_price=%s",
+                    current_position.get("symbol"),
+                    current_position.get("qty"),
+                    current_position.get("entry_price")
+                )
+            else:
+                self._position = {}
+                self._last_position_qty = 0
+                self.logger.info("持仓同步完成: 无持仓")
+            
+        except Exception as e:
+            self.logger.exception("持仓同步失败: %s", e)
+
     async def _periodic_sync_loop(self):
         """定期全量同步循环（带超时控制）"""
         while True:
@@ -620,6 +681,28 @@ class StandXAdapter:
                 await self._market_stream.subscribe("order", callback=self.on_order)
                 await self._market_stream.subscribe("position", callback=self.on_position)
                 self.logger.info("已重新认证并订阅order/position")
+                
+                # 重连后同步持仓和订单状态，确保数据一致
+                if self._auth:
+                    try:
+                        await asyncio.wait_for(
+                            self._sync_positions_from_server(),
+                            timeout=5.0
+                        )
+                    except asyncio.TimeoutError:
+                        self.logger.warning("重连后持仓同步超时（5秒），跳过本次同步")
+                    except Exception as e:
+                        self.logger.exception("重连后持仓同步失败: %s", e)
+                    
+                    try:
+                        await asyncio.wait_for(
+                            self._sync_orders_from_server(),
+                            timeout=5.0
+                        )
+                    except asyncio.TimeoutError:
+                        self.logger.warning("重连后订单同步超时（5秒），跳过本次同步")
+                    except Exception as e:
+                        self.logger.exception("重连后订单同步失败: %s", e)
             
             self._last_message_time = time.time()
             self.logger.info("Market stream重连成功")
