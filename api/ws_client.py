@@ -269,7 +269,12 @@ class StandXOrderStream:
         if callback:
             self.callbacks[request_id] = callback
 
-        await self.ws.send(json.dumps(message))
+        try:
+            await self.ws.send(json.dumps(message))
+        except Exception as e:
+            # WebSocket连接断开时标记状态并抛出异常
+            self.connected = False
+            raise Exception(f"WebSocket发送失败（连接可能已断开）: {e}")
 
     async def cancel_order(
         self,
@@ -315,7 +320,12 @@ class StandXOrderStream:
         if callback:
             self.callbacks[request_id] = callback
 
-        await self.ws.send(json.dumps(message))
+        try:
+            await self.ws.send(json.dumps(message))
+        except Exception as e:
+            # WebSocket连接断开时标记状态并抛出异常
+            self.connected = False
+            raise Exception(f"WebSocket发送失败（连接可能已断开）: {e}")
 
     async def disconnect(self):
         """关闭连接"""

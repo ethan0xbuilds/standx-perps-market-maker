@@ -952,7 +952,7 @@ class StandXAdapter:
         leverage: Optional[int] = None,
     ) -> dict:
         """
-        通过订单流下单
+        通过订单流下单（带重连重试机制）
         Args:
             symbol (str): 交易对
             side (str): 买卖方向 "buy" 或 "sell"
@@ -966,19 +966,54 @@ class StandXAdapter:
         Returns:
             dict: 下单结果
         """
-        await self._ensure_order_stream_connected()
+        max_retries = 3
+        retry_delay = 1.0  # 重试间隔（秒）
+        
+        for attempt in range(max_retries):
+            try:
+                await self._ensure_order_stream_connected()
 
-        await self._order_stream.new_order(
-            symbol=symbol,
-            side=side,
-            order_type=order_type,
-            qty=qty,
-            time_in_force=time_in_force,
-            reduce_only=reduce_only,
-            price=price,
-            cl_ord_id=None,
-            callback=self.on_new_order,
-        )
+                await self._order_stream.new_order(
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type,
+                    qty=qty,
+                    time_in_force=time_in_force,
+                    reduce_only=reduce_only,
+                    price=price,
+                    cl_ord_id=None,
+                    callback=self.on_new_order,
+                )
+                # 下单成功，返回
+                if attempt > 0:
+                    self.logger.info("下单重试成功 (尝试 %d/%d)", attempt + 1, max_retries)
+                return
+                
+            except Exception as e:
+                error_msg = str(e)
+                is_connection_error = (
+                    "WebSocket发送失败" in error_msg
+                    or "WebSocket 未连接" in error_msg
+                    or "ConnectionClosed" in error_msg
+                    or "going away" in error_msg
+                )
+                
+                if is_connection_error and attempt < max_retries - 1:
+                    self.logger.warning(
+                        "下单失败(连接断开)，%d秒后重试 (%d/%d): %s",
+                        retry_delay,
+                        attempt + 1,
+                        max_retries,
+                        error_msg,
+                    )
+                    # 标记连接断开，下次循环会触发重连
+                    if self._order_stream:
+                        self._order_stream.connected = False
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    # 非连接错误或已达最大重试次数，抛出异常
+                    raise
 
     async def close_position(self, symbol: str):
         """
@@ -1036,11 +1071,12 @@ class StandXAdapter:
 
     async def cancel_all_orders(self, symbol: Optional[str] = None):
         """
-        取消所有未完成订单
+        取消所有未完成订单（带重连重试机制）
         Args:
             symbol (Optional[str]): 交易对，若提供则只取消该交易对的订单
         """
-        await self._ensure_order_stream_connected()
+        max_retries = 3
+        retry_delay = 1.0
 
         orders_to_cancel = (
             [order for order in self._orders_dict.values() if order["symbol"] == symbol]
@@ -1049,14 +1085,43 @@ class StandXAdapter:
         )
 
         for order in orders_to_cancel:
-            try:
-                await self._order_stream.cancel_order(
-                    order_id=order["id"],
-                    cl_ord_id=order["cl_ord_id"],
-                    callback=self.on_cancel_order,
-                )
-            except Exception as e:
-                self.logger.exception("取消失败: %s", e)
+            for attempt in range(max_retries):
+                try:
+                    await self._ensure_order_stream_connected()
+                    
+                    await self._order_stream.cancel_order(
+                        order_id=order["id"],
+                        cl_ord_id=order["cl_ord_id"],
+                        callback=self.on_cancel_order,
+                    )
+                    # 取消成功，跳出重试循环
+                    break
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    is_connection_error = (
+                        "WebSocket发送失败" in error_msg
+                        or "WebSocket 未连接" in error_msg
+                        or "ConnectionClosed" in error_msg
+                        or "going away" in error_msg
+                    )
+                    
+                    if is_connection_error and attempt < max_retries - 1:
+                        self.logger.warning(
+                            "取消订单失败(连接断开)，%d秒后重试 (%d/%d): %s",
+                            retry_delay,
+                            attempt + 1,
+                            max_retries,
+                            error_msg,
+                        )
+                        # 标记连接断开，下次循环会触发重连
+                        if self._order_stream:
+                            self._order_stream.connected = False
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        # 记录异常但继续取消其他订单
+                        self.logger.exception("取消订单失败(最终): %s", e)
+                        break
 
     async def cleanup(self):
         """清理资源，关闭 WebSocket 连接"""
